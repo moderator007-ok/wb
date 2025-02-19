@@ -1,22 +1,18 @@
-# Use an official Python runtime as a parent image.
 FROM python:3.9-slim
 
-# Install FFmpeg and clean up apt lists.
+# Install FFmpeg and build dependencies.
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
+    apt-get install -y ffmpeg gcc build-essential libssl-dev libffi-dev python3-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Set the working directory.
 WORKDIR /app
 
-# Copy dependency list and install them.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code.
+# Copy the rest of your application code.
 COPY config.py .
 COPY main.py .
 COPY app.py .
 
-# Run Gunicorn in the background and then start the bot.
-CMD gunicorn app:app & python3 main.py
+CMD ["sh", "-c", "gunicorn app:app & python3 main.py"]
