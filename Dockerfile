@@ -19,4 +19,4 @@ COPY main.py .
 COPY app.py .
 
 # Run Gunicorn in the background and then start the bot.
-CMD ["sh", "-c", "gunicorn app:app & python3 main.py"]
+CMD gunicorn app:app & python3 main.py
