@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of your application code
 COPY . .
 
-CMD ["sh", "-c", "gunicorn app:app & python3 main.py"]
+CMD gunicorn app:app & python3 main.py
