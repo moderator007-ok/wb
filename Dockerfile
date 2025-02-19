@@ -13,12 +13,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code.
+# Copy the application code.
 COPY config.py .
 COPY main.py .
+COPY app.py .
 
-# Set environment variables here if you wish to provide defaults (optional).
-# ENV FFMPEG_PATH=ffmpeg
-
-# Run the bot.
-CMD ["python", "main.py"]
+# Run Gunicorn in the background and then start the bot.
+CMD ["sh", "-c", "gunicorn app:app & python3 main.py"]
