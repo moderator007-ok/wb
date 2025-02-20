@@ -606,5 +606,4 @@ async def process_imgwatermark(client, message, state, chat_id):
         del user_state[chat_id]
 
 if __name__ == "__main__":
-    # Start the bot using Pyrogram's built-in run() method.
     app.run()
