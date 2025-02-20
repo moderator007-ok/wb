@@ -39,7 +39,7 @@ def create_download_progress(client, chat_id, progress_msg):
             percent = (current / total) * 100
             if percent - last_update >= 5 or percent >= 100:
                 try:
-                    await client.edit_message_text(chat_id, progress_msg.id, f"Downloading: {percent:.2f}%")
+                    await client.edit_text(chat_id, progress_msg.id, f"Downloading: {percent:.2f}%")
                     last_update = percent
                 except Exception as e:
                     logger.error("Error updating download progress: " + str(e))
@@ -53,7 +53,7 @@ def create_upload_progress(client, chat_id, progress_msg):
             percent = (current / total) * 100
             if percent - last_update >= 5 or percent >= 100:
                 try:
-                    await client.edit_message_text(chat_id, progress_msg.id, f"Uploading: {percent:.2f}%")
+                    await client.edit_text(chat_id, progress_msg.id, f"Uploading: {percent:.2f}%")
                     last_update = percent
                 except Exception as e:
                     logger.error("Error updating upload progress: " + str(e))
@@ -169,7 +169,7 @@ async def video_handler(client, message: Message):
             return
         state['video_message'] = message
         state['step'] = 'processing'
-        await message.reply_text("Video captured. Processing preset watermark.")
+        await message.reply_text("Video captured. Watermarking started.")
         processing_active = True
         try:
             await process_watermark(client, message, state, chat_id)
@@ -246,7 +246,7 @@ async def text_handler(client, message: Message):
                 await message.reply_text("A process is already running; please try later.")
                 return
             processing_active = True
-            await message.reply_text("All inputs collected. Processing full-length watermark video, please wait...")
+            await message.reply_text("All inputs collected. Watermarking started.")
             try:
                 await process_watermark(client, message, state, chat_id)
             finally:
@@ -273,7 +273,7 @@ async def process_watermark(client, message, state, chat_id):
     logger.info("Starting video download...")
     await video_msg.download(file_name=input_file_path, progress=download_cb)
     logger.info("Video download completed.")
-    await progress_msg.edit_message_text("Download complete. Processing: 0%")
+    await progress_msg.edit_text("Download complete. Watermarking started.")
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
     if state['mode'] in ['watermark', 'harrypotter']:
         filter_str = (
@@ -302,37 +302,22 @@ async def process_watermark(client, message, state, chat_id):
         "-progress", "pipe:1",
         output_file
     ]
-    logger.info("Processing full-length watermark video...")
+    logger.info("Starting watermarking process...")
     proc = await asyncio.create_subprocess_exec(
         *ffmpeg_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT
     )
-    last_update = 0
-    while True:
-        line = await proc.stdout.readline()
-        if not line:
-            break
-        line = line.decode('utf-8').strip()
-        logger.info(line)
-        if line.startswith("out_time_ms="):
-            try:
-                out_time_ms = int(line.split("=")[1])
-                seconds = out_time_ms / 1000000  # Convert microseconds to seconds
-                if seconds - last_update >= 60 or seconds >= 2400:
-                    await progress_msg.edit_message_text(f"Processing: {int(seconds)} s processed")
-                    last_update = seconds
-            except Exception as e:
-                logger.error("Error parsing processing progress: " + str(e))
+    # Remove ffmpeg processing tracking: do not update progress during watermarking.
     await proc.wait()
     if proc.returncode != 0:
-        logger.error(f"Error processing full-length watermark. Return code: {proc.returncode}")
+        logger.error(f"Error processing watermark. Return code: {proc.returncode}")
         await message.reply_text("Error processing full-length watermarked video.")
         shutil.rmtree(temp_dir)
         if chat_id in user_state:
             del user_state[chat_id]
         return
-    await progress_msg.edit_message_text("Processing complete. Uploading: 0%")
+    await progress_msg.edit_text("Watermarking complete. Uploading: 0%")
     upload_cb = create_upload_progress(client, chat_id, progress_msg)
     try:
         logger.info("Uploading watermarked video...")
@@ -343,7 +328,7 @@ async def process_watermark(client, message, state, chat_id):
             progress=upload_cb
         )
         logger.info("Upload completed successfully.")
-        await progress_msg.edit_message_text("Upload complete.")
+        await progress_msg.edit_text("Upload complete.")
     except Exception as e:
         logger.error(f"Error sending video for chat {chat_id}: {e}")
         await message.reply_text("Failed to send watermarked video.")
@@ -367,8 +352,8 @@ async def process_overlay(client, message, state, chat_id):
     logger.info("Downloading main video...")
     await main_msg.download(file_name=main_file_path, progress=download_cb)
     logger.info("Main video downloaded.")
-    await progress_msg.edit_message_text("Main video downloaded.")
-    await progress_msg.edit_message_text("Downloading overlay video: 0%")
+    await progress_msg.edit_text("Main video downloaded.")
+    await progress_msg.edit_text("Downloading overlay video: 0%")
     overlay_msg = state['overlay_video_message']
     if overlay_msg.video:
         overlay_file_name = overlay_msg.video.file_name or f"{overlay_msg.video.file_id}.mp4"
@@ -381,8 +366,8 @@ async def process_overlay(client, message, state, chat_id):
     logger.info("Downloading overlay video...")
     await overlay_msg.download(file_name=overlay_file_path, progress=download_cb)
     logger.info("Overlay video downloaded.")
-    await progress_msg.edit_message_text("Overlay video downloaded.")
-    await progress_msg.edit_message_text("Pre-processing overlay video...")
+    await progress_msg.edit_text("Overlay video downloaded.")
+    await progress_msg.edit_text("Pre-processing overlay video...")
     processed_overlay_path = os.path.join(temp_dir, "processed_overlay.mov")
     pre_process_cmd = [
         FFMPEG_PATH,
@@ -409,7 +394,7 @@ async def process_overlay(client, message, state, chat_id):
         if chat_id in user_state:
             del user_state[chat_id]
         return
-    await progress_msg.edit_message_text("Pre-processing complete. Processing overlay: 0%")
+    await progress_msg.edit_text("Pre-processing complete. Processing overlay: 0%")
     duration = state.get('duration', 30)
     base_name = os.path.splitext(os.path.basename(main_file_path))[0]
     seg1 = os.path.join(temp_dir, f"{base_name}_seg1.mp4")
@@ -443,7 +428,7 @@ async def process_overlay(client, message, state, chat_id):
             hours, minutes, seconds = m.groups()
             current_time = int(hours)*3600 + int(minutes)*60 + float(seconds)
             proc_percent = (current_time / duration) * 100
-            await progress_msg.edit_message_text(f"Processing overlay: {proc_percent:.2f}%")
+            await progress_msg.edit_text(f"Processing overlay: {proc_percent:.2f}%")
     await proc1.wait()
     if proc1.returncode != 0:
         logger.error(f"Error processing overlay segment 1. Return code: {proc1.returncode}")
@@ -509,7 +494,7 @@ async def process_overlay(client, message, state, chat_id):
         if chat_id in user_state:
             del user_state[chat_id]
         return
-    await progress_msg.edit_message_text("Processing complete. Uploading: 0%")
+    await progress_msg.edit_text("Processing complete. Uploading: 0%")
     upload_cb = create_upload_progress(client, chat_id, progress_msg)
     try:
         logger.info("Uploading overlaid video...")
@@ -520,7 +505,7 @@ async def process_overlay(client, message, state, chat_id):
             progress=upload_cb
         )
         logger.info("Upload completed successfully.")
-        await progress_msg.edit_message_text("Upload complete.")
+        await progress_msg.edit_text("Upload complete.")
     except Exception as e:
         logger.error(f"Error sending overlaid video for chat {chat_id}: {e}")
         await message.reply_text("Failed to send overlaid video.")
@@ -544,7 +529,7 @@ async def process_imgwatermark(client, message, state, chat_id):
     logger.info("Downloading video for image watermark...")
     await video_msg.download(file_name=input_video_path, progress=download_cb)
     logger.info("Video downloaded.")
-    await progress_msg.edit_message_text("Video downloaded. Downloading image: 0%")
+    await progress_msg.edit_text("Video downloaded. Downloading image: 0%")
     image_msg = state['image_message']
     if image_msg.photo:
         file_name_img = "watermark.png"
@@ -557,7 +542,7 @@ async def process_imgwatermark(client, message, state, chat_id):
     logger.info("Downloading watermark image...")
     await image_msg.download(file_name=input_image_path, progress=download_cb)
     logger.info("Watermark image downloaded.")
-    await progress_msg.edit_message_text("Image downloaded. Processing video...")
+    await progress_msg.edit_text("Image downloaded. Processing video...")
     output_file = os.path.join(temp_dir, "output_imgwatermark.mp4")
     ffmpeg_cmd = [
         FFMPEG_PATH,
@@ -586,7 +571,7 @@ async def process_imgwatermark(client, message, state, chat_id):
         if chat_id in user_state:
             del user_state[chat_id]
         return
-    await progress_msg.edit_message_text("Processing complete. Uploading: 0%")
+    await progress_msg.edit_text("Processing complete. Uploading: 0%")
     upload_cb = create_upload_progress(client, chat_id, progress_msg)
     try:
         logger.info("Uploading image-watermarked video...")
@@ -597,7 +582,7 @@ async def process_imgwatermark(client, message, state, chat_id):
             progress=upload_cb
         )
         logger.info("Upload completed successfully.")
-        await progress_msg.edit_message_text("Upload complete.")
+        await progress_msg.edit_text("Upload complete.")
     except Exception as e:
         logger.error(f"Error sending image-watermarked video for chat {chat_id}: {e}")
         await message.reply_text("Failed to send image-watermarked video.")
