@@ -31,7 +31,7 @@ app = Client("watermark_robot_2", api_id=API_ID, api_hash=API_HASH, bot_token=BO
 user_state = {}
 
 # ─── Progress Callback Factories (Throttled at 5% increments) ─────
-def create_download_progress(client, chat_id, progress_msg):
+def create_download_progress(client, chat_id, progress_msg: Message):
     last_update = 0
     async def progress(current, total):
         nonlocal last_update
@@ -39,13 +39,14 @@ def create_download_progress(client, chat_id, progress_msg):
             percent = (current / total) * 100
             if percent - last_update >= 5 or percent >= 100:
                 try:
-                    await client.edit_text(chat_id, progress_msg.id, f"Downloading: {percent:.2f}%")
+                    # Use the Message object's edit_text() method.
+                    await progress_msg.edit_text(f"Downloading: {percent:.2f}%")
                     last_update = percent
                 except Exception as e:
                     logger.error("Error updating download progress: " + str(e))
     return progress
 
-def create_upload_progress(client, chat_id, progress_msg):
+def create_upload_progress(client, chat_id, progress_msg: Message):
     last_update = 0
     async def progress(current, total):
         nonlocal last_update
@@ -53,7 +54,7 @@ def create_upload_progress(client, chat_id, progress_msg):
             percent = (current / total) * 100
             if percent - last_update >= 5 or percent >= 100:
                 try:
-                    await client.edit_text(chat_id, progress_msg.id, f"Uploading: {percent:.2f}%")
+                    await progress_msg.edit_text(f"Uploading: {percent:.2f}%")
                     last_update = percent
                 except Exception as e:
                     logger.error("Error updating upload progress: " + str(e))
@@ -308,11 +309,10 @@ async def process_watermark(client, message, state, chat_id):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT
     )
-    # Remove ffmpeg processing tracking: do not update progress during watermarking.
     await proc.wait()
     if proc.returncode != 0:
         logger.error(f"Error processing watermark. Return code: {proc.returncode}")
-        await message.reply_text("Error processing full-length watermarked video.")
+        await message.reply_text("Error processing watermarked video.")
         shutil.rmtree(temp_dir)
         if chat_id in user_state:
             del user_state[chat_id]
