@@ -13,7 +13,7 @@ from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 # Allowed admin IDs for /stop and /restart commands.
 ALLOWED_ADMINS = [640815756, 5317760109]
 
-# Global flag to indicate a processing task is active.
+# Global flag: only one processing task runs at a time.
 processing_active = False
 
 # ─── Logging Configuration ─────────────────────────────────────
@@ -66,7 +66,6 @@ async def stop_cmd(client, message: Message):
         await message.reply_text("Unauthorized.")
         return
     global processing_active
-    # Since we are not queueing tasks, we simply indicate no new tasks can start.
     if processing_active:
         processing_active = False
         await message.reply_text("Processing task stopped.")
@@ -152,6 +151,7 @@ async def imgwatermark_cmd(client, message: Message):
 # ─── Video Handler ─────────────────────────────────────────────
 @app.on_message(filters.private & (filters.video | filters.document))
 async def video_handler(client, message: Message):
+    global processing_active
     chat_id = message.chat.id
     if chat_id not in user_state:
         return
@@ -170,7 +170,6 @@ async def video_handler(client, message: Message):
         state['video_message'] = message
         state['step'] = 'processing'
         await message.reply_text("Video captured. Processing preset watermark.")
-        global processing_active
         processing_active = True
         try:
             await process_watermark(client, message, state, chat_id)
@@ -191,6 +190,7 @@ async def video_handler(client, message: Message):
 # ─── Image Handler for /imgwatermark ─────────────────────────────
 @app.on_message(filters.private & (filters.photo | filters.document))
 async def image_handler(client, message: Message):
+    global processing_active
     chat_id = message.chat.id
     if chat_id not in user_state:
         return
@@ -199,7 +199,6 @@ async def image_handler(client, message: Message):
         state['image_message'] = message
         state['step'] = 'processing'
         await message.reply_text("Image received. Processing video with image watermark, please wait...")
-        global processing_active
         if processing_active:
             await message.reply_text("A process is already running; please try later.")
             return
@@ -212,6 +211,7 @@ async def image_handler(client, message: Message):
 # ─── Text Handler for Inputs ─────────────────────────────────────
 @app.on_message(filters.text & filters.private)
 async def text_handler(client, message: Message):
+    global processing_active
     chat_id = message.chat.id
     if chat_id not in user_state:
         return
@@ -242,12 +242,11 @@ async def text_handler(client, message: Message):
             else:
                 state['font_color'] = "white"
             state['step'] = 'processing'
-            # Check global flag before starting processing.
-            global processing_active
             if processing_active:
                 await message.reply_text("A process is already running; please try later.")
                 return
             processing_active = True
+            await message.reply_text("All inputs collected. Processing full-length watermark video, please wait...")
             try:
                 await process_watermark(client, message, state, chat_id)
             finally:
@@ -320,7 +319,6 @@ async def process_watermark(client, message, state, chat_id):
             try:
                 out_time_ms = int(line.split("=")[1])
                 seconds = out_time_ms / 1000000  # Convert microseconds to seconds
-                # Update progress if at least 60 seconds have passed or if processed time >= 2400 seconds.
                 if seconds - last_update >= 60 or seconds >= 2400:
                     await progress_msg.edit_message_text(f"Processing: {int(seconds)} s processed")
                     last_update = seconds
@@ -610,7 +608,7 @@ async def process_imgwatermark(client, message, state, chat_id):
 async def main():
     await app.start()
     try:
-        await app.run()  # For Pyrogram versions that support run(), otherwise use idle.
+        await app.run()
     except Exception as e:
         logger.error("Error during app.run(): " + str(e))
     finally:
