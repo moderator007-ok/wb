@@ -13,32 +13,8 @@ from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 # Allowed admin IDs for /stop and /restart commands.
 ALLOWED_ADMINS = [640815756, 5317760109]
 
-# ─── Global Queue & Active Flag for Sequential Processing ─────────
-processing_queue = asyncio.Queue()
+# Global flag to indicate a processing task is active.
 processing_active = False
-
-async def enqueue_task(func, client, message, state, chat_id):
-    async def task_func():
-        try:
-            await func(client, message, state, chat_id)
-        except Exception as e:
-            logger.error("Error in processing task: " + str(e))
-    # If a process is already running or queued, inform the user.
-    if processing_active or processing_queue.qsize() > 0:
-        await message.reply_text("A process is already running; your process is queued.")
-    await processing_queue.put(task_func)
-
-async def processing_worker():
-    global processing_active
-    while True:
-        task_func = await processing_queue.get()
-        processing_active = True
-        try:
-            await task_func()
-        except Exception as e:
-            logger.error("Error in processing task: " + str(e))
-        processing_active = False
-        processing_queue.task_done()
 
 # ─── Logging Configuration ─────────────────────────────────────
 logging.basicConfig(
@@ -89,14 +65,13 @@ async def stop_cmd(client, message: Message):
     if message.chat.id not in ALLOWED_ADMINS:
         await message.reply_text("Unauthorized.")
         return
-    # Clear the processing queue.
-    while not processing_queue.empty():
-        try:
-            processing_queue.get_nowait()
-            processing_queue.task_done()
-        except asyncio.QueueEmpty:
-            break
-    await message.reply_text("All queued processing tasks have been cleared.")
+    global processing_active
+    # Since we are not queueing tasks, we simply indicate no new tasks can start.
+    if processing_active:
+        processing_active = False
+        await message.reply_text("Processing task stopped.")
+    else:
+        await message.reply_text("No processing task is running.")
 
 @app.on_message(filters.command("restart") & filters.private)
 async def restart_cmd(client, message: Message):
@@ -189,10 +164,18 @@ async def video_handler(client, message: Message):
         state['step'] = 'await_text'
         await message.reply_text("Video captured. Now send the watermark text.")
     elif mode == 'harrypotter':
+        if processing_active:
+            await message.reply_text("A process is already running; please try later.")
+            return
         state['video_message'] = message
         state['step'] = 'processing'
         await message.reply_text("Video captured. Processing preset watermark.")
-        await enqueue_task(process_watermark, client, message, state, chat_id)
+        global processing_active
+        processing_active = True
+        try:
+            await process_watermark(client, message, state, chat_id)
+        finally:
+            processing_active = False
     elif mode == 'overlay':
         if state.get('step') == 'await_main':
             state['main_video_message'] = message
@@ -216,7 +199,15 @@ async def image_handler(client, message: Message):
         state['image_message'] = message
         state['step'] = 'processing'
         await message.reply_text("Image received. Processing video with image watermark, please wait...")
-        await enqueue_task(process_imgwatermark, client, message, state, chat_id)
+        global processing_active
+        if processing_active:
+            await message.reply_text("A process is already running; please try later.")
+            return
+        processing_active = True
+        try:
+            await process_imgwatermark(client, message, state, chat_id)
+        finally:
+            processing_active = False
 
 # ─── Text Handler for Inputs ─────────────────────────────────────
 @app.on_message(filters.text & filters.private)
@@ -251,14 +242,22 @@ async def text_handler(client, message: Message):
             else:
                 state['font_color'] = "white"
             state['step'] = 'processing'
-            await message.reply_text("All inputs collected. Processing full-length watermark video, please wait...")
-            await enqueue_task(process_watermark, client, message, state, chat_id)
+            # Check global flag before starting processing.
+            global processing_active
+            if processing_active:
+                await message.reply_text("A process is already running; please try later.")
+                return
+            processing_active = True
+            try:
+                await process_watermark(client, message, state, chat_id)
+            finally:
+                processing_active = False
     elif mode == 'harrypotter':
         pass
     elif mode == 'overlay':
         pass
 
-# ─── Processing Functions (Sequential Queue) ─────────────────────
+# ─── Processing Functions ─────────────────────────────────────────
 async def process_watermark(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
@@ -610,11 +609,10 @@ async def process_imgwatermark(client, message, state, chat_id):
 
 async def main():
     await app.start()
-    asyncio.create_task(processing_worker())
     try:
-        await app.idle()
-    except KeyboardInterrupt:
-        logger.info("Bot interrupted by user.")
+        await app.run()  # For Pyrogram versions that support run(), otherwise use idle.
+    except Exception as e:
+        logger.error("Error during app.run(): " + str(e))
     finally:
         await app.stop()
 
