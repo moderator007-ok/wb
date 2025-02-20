@@ -28,7 +28,8 @@ def create_download_progress(client, chat_id, progress_msg):
         if total:
             percent = (current / total) * 100
             try:
-                await client.edit_message_text(chat_id, progress_msg.message_id, f"Downloading: {percent:.2f}%")
+                # Use progress_msg.id since .message_id might not be available.
+                await client.edit_message_text(chat_id, progress_msg.id, f"Downloading: {percent:.2f}%")
             except Exception as e:
                 logger.error("Error updating download progress: " + str(e))
     return progress
@@ -38,7 +39,7 @@ def create_upload_progress(client, chat_id, progress_msg):
         if total:
             percent = (current / total) * 100
             try:
-                await client.edit_message_text(chat_id, progress_msg.message_id, f"Uploading: {percent:.2f}%")
+                await client.edit_message_text(chat_id, progress_msg.id, f"Uploading: {percent:.2f}%")
             except Exception as e:
                 logger.error("Error updating upload progress: " + str(e))
     return progress
@@ -47,7 +48,7 @@ def create_upload_progress(client, chat_id, progress_msg):
 @app.on_message(filters.command("watermark") & filters.private)
 async def watermark_cmd(client, message: Message):
     chat_id = message.chat.id
-    # Standard watermark: ask for video, then text, size, color, and duration.
+    # Standard /watermark: ask for video, then text, size, and color.
     user_state[chat_id] = {
         'mode': 'watermark',
         'video_message': None,
@@ -55,7 +56,7 @@ async def watermark_cmd(client, message: Message):
         'watermark_text': None,
         'font_size': None,
         'font_color': None,
-        'duration': None,
+        # No duration needed for full-length watermark.
         'step': 'await_video'
     }
     await message.reply_text("Send video.")
@@ -63,8 +64,7 @@ async def watermark_cmd(client, message: Message):
 @app.on_message(filters.command("watermarktm") & filters.private)
 async def watermarktm_cmd(client, message: Message):
     chat_id = message.chat.id
-    # watermarktm mode: apply watermark (animated) over the full length.
-    # Only ask for text, size, and color.
+    # /watermarktm: full-length watermark using alternate animation.
     user_state[chat_id] = {
         'mode': 'watermarktm',
         'video_message': None,
@@ -72,7 +72,6 @@ async def watermarktm_cmd(client, message: Message):
         'watermark_text': None,
         'font_size': None,
         'font_color': None,
-        # duration is not used in full-length mode.
         'step': 'await_video'
     }
     await message.reply_text("Send video.")
@@ -80,8 +79,7 @@ async def watermarktm_cmd(client, message: Message):
 @app.on_message(filters.command("harrypotter") & filters.private)
 async def harrypotter_cmd(client, message: Message):
     chat_id = message.chat.id
-    # Preset values for harrypotter:
-    # Text: @VictoryAnthem, Size: 32, Colour: Black, Duration: 600 seconds.
+    # /harrypotter preset: Text @VictoryAnthem, Size 32, Colour Black.
     user_state[chat_id] = {
         'mode': 'harrypotter',
         'video_message': None,
@@ -89,7 +87,6 @@ async def harrypotter_cmd(client, message: Message):
         'watermark_text': "@VictoryAnthem",
         'font_size': 32,
         'font_color': "black",
-        'duration': 600,
         'step': 'await_video'
     }
     await message.reply_text("Harry Potter preset activated. Send video.")
@@ -128,15 +125,7 @@ async def video_handler(client, message: Message):
     state = user_state[chat_id]
     mode = state.get('mode')
 
-    if mode in ['watermark']:
-        # For standard /watermark, wait for video then ask for text.
-        if state.get('step') != 'await_video':
-            return
-        state['video_message'] = message
-        state['step'] = 'await_text'
-        await message.reply_text("Video captured. Now send the watermark text.")
-    elif mode == 'watermarktm':
-        # For watermarktm, capture video then ask for text.
+    if mode in ['watermark', 'watermarktm']:
         if state.get('step') != 'await_video':
             return
         state['video_message'] = message
@@ -182,6 +171,7 @@ async def text_handler(client, message: Message):
     current_step = state.get('step')
     mode = state.get('mode')
 
+    # For watermark, watermarktm, and harrypotter modes, we now only ask for text, size, and color.
     if mode in ['watermark', 'watermarktm']:
         if current_step == 'await_text':
             state['watermark_text'] = message.text.strip()
@@ -205,15 +195,15 @@ async def text_handler(client, message: Message):
                 state['font_color'] = "red"
             else:
                 state['font_color'] = "white"
-            if mode == 'watermark':
-                state['step'] = 'await_duration'
-                await message.reply_text("Color received. Now send the duration (in seconds) during which the watermark should appear.")
-            else:
-                # For /watermarktm, no duration is needed.
-                state['step'] = 'processing'
-                await message.reply_text("All inputs collected. Processing full-length watermark video, please wait...")
-                await process_watermark(client, message, state, chat_id)
+            # No duration is asked; proceed immediately.
+            state['step'] = 'processing'
+            await message.reply_text("All inputs collected. Processing full-length watermark video, please wait...")
+            await process_watermark(client, message, state, chat_id)
+    elif mode == 'harrypotter':
+        # Preset mode already set inputs; no further text is needed.
+        pass
     elif mode == 'overlay':
+        # (Overlay input handling remains unchanged)
         if current_step == 'await_duration':
             try:
                 duration = float(message.text.strip())
@@ -247,124 +237,47 @@ async def process_watermark(client, message, state, chat_id):
 
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
     # Build the animated watermark filter.
-    # For both /watermark and /harrypotter, watermark is applied only for a specified duration.
-    filter_str = (
-        f"drawtext=text='{state['watermark_text']}':"
-        f"fontcolor={state['font_color']}:" 
-        f"fontsize={state['font_size']}:" 
-        f"x=(w-text_w)/2:" 
-        f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
-    )
-
+    # Use different filter strings based on mode.
     if state['mode'] in ['watermark', 'harrypotter']:
-        duration = state['duration']
-        seg1 = os.path.join(temp_dir, f"{base_name}_seg1.mp4")
-        seg2 = os.path.join(temp_dir, f"{base_name}_seg2.mp4")
-        output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
-
-        # Process first segment with watermark filter active for t < duration.
-        ffmpeg_cmd1 = [
-            FFMPEG_PATH,
-            "-i", input_file_path,
-            "-vf", f"{filter_str}:enable='lt(t,{duration})'",
-            "-c:v", "libx264", "-crf", "23", "-preset", "medium",
-            "-c:a", "copy",
-            "-t", str(duration),
-            seg1
-        ]
-        logger.info("Processing segment 1 with watermark filter...")
-        proc1 = subprocess.Popen(ffmpeg_cmd1, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
-        while True:
-            line = proc1.stdout.readline()
-            if not line:
-                break
-            logger.info(line.strip())
-            m = time_pattern.search(line)
-            if m:
-                hours, minutes, seconds = m.groups()
-                current_time = int(hours)*3600 + int(minutes)*60 + float(seconds)
-                proc_percent = (current_time / duration) * 100
-                try:
-                    await progress_msg.edit_text(f"Processing: {proc_percent:.2f}%")
-                except Exception as e:
-                    logger.error("Error updating processing progress: " + str(e))
-        proc1.wait()
-        if proc1.returncode != 0:
-            logger.error(f"Error processing segment 1. Return code: {proc1.returncode}")
-            await message.reply_text("Error processing video (segment 1).")
-            shutil.rmtree(temp_dir)
-            del user_state[chat_id]
-            return
-
-        # Process second segment: copy the remainder from t = duration to the end.
-        ffmpeg_cmd2 = [
-            FFMPEG_PATH,
-            "-ss", str(duration),
-            "-i", input_file_path,
-            "-reset_timestamps", "1",
-            "-c", "copy",
-            seg2
-        ]
-        logger.info("Copying remaining segment (segment 2) without watermark...")
-        proc2 = subprocess.Popen(ffmpeg_cmd2, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        for line in proc2.stdout:
-            logger.info(line.strip())
-        proc2.wait()
-        if proc2.returncode != 0:
-            logger.error(f"Error processing segment 2. Return code: {proc2.returncode}")
-            await message.reply_text("Error processing video (segment 2).")
-            shutil.rmtree(temp_dir)
-            del user_state[chat_id]
-            return
-
-        # Concatenate the two segments.
-        concat_file = os.path.join(temp_dir, "concat_list.txt")
-        with open(concat_file, "w") as f:
-            f.write(f"file '{seg1}'\n")
-            f.write(f"file '{seg2}'\n")
-        ffmpeg_concat_cmd = [
-            FFMPEG_PATH,
-            "-f", "concat",
-            "-safe", "0",
-            "-i", concat_file,
-            "-c", "copy",
-            output_file
-        ]
-        logger.info("Concatenating segments...")
-        proc3 = subprocess.Popen(ffmpeg_concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        for line in proc3.stdout:
-            logger.info(line.strip())
-        proc3.wait()
-        if proc3.returncode != 0:
-            logger.error(f"Error during concatenation. Return code: {proc3.returncode}")
-            await message.reply_text("Error concatenating video segments.")
-            shutil.rmtree(temp_dir)
-            del user_state[chat_id]
-            return
+        # Centered x and vertical animation from bottom upward (looping every 30 sec)
+        filter_str = (
+            f"drawtext=text='{state['watermark_text']}':"
+            f"fontcolor={state['font_color']}:" 
+            f"fontsize={state['font_size']}:" 
+            f"x=(w-text_w)/2:"
+            f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
+        )
     elif state['mode'] == 'watermarktm':
-        # For watermarktm, apply the watermark filter over the entire video.
-        output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
-        ffmpeg_cmd = [
-            FFMPEG_PATH,
-            "-fflags", "+genpts",  # Regenerate timestamps.
-            "-i", input_file_path,
-            "-vf", filter_str,
-            "-c:v", "libx264", "-crf", "23", "-preset", "medium",
-            "-c:a", "copy",
-            output_file
-        ]
-        logger.info("Processing full-length watermark (watermarktm mode)...")
-        proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        for line in proc.stdout:
-            logger.info(line.strip())
-        proc.wait()
-        if proc.returncode != 0:
-            logger.error(f"Error processing full-length watermark. Return code: {proc.returncode}")
-            await message.reply_text("Error processing full-length watermarked video.")
-            shutil.rmtree(temp_dir)
-            del user_state[chat_id]
-            return
+        # Alternate animation: positions vary with mod(t)
+        filter_str = (
+            f"drawtext=text='{state['watermark_text']}':"
+            f"fontcolor={state['font_color']}:" 
+            f"fontsize={state['font_size']}:" 
+            f"x='mod(t\\,30)*30':"
+            f"y='mod(t\\,30)*15'"
+        )
+
+    output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
+    ffmpeg_cmd = [
+        FFMPEG_PATH,
+        "-fflags", "+genpts",  # Regenerate timestamps.
+        "-i", input_file_path,
+        "-vf", filter_str,
+        "-c:v", "libx264", "-crf", "23", "-preset", "medium",
+        "-c:a", "copy",
+        output_file
+    ]
+    logger.info("Processing full-length watermark video...")
+    proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    for line in proc.stdout:
+        logger.info(line.strip())
+    proc.wait()
+    if proc.returncode != 0:
+        logger.error(f"Error processing full-length watermark. Return code: {proc.returncode}")
+        await message.reply_text("Error processing full-length watermarked video.")
+        shutil.rmtree(temp_dir)
+        del user_state[chat_id]
+        return
 
     await progress_msg.edit_text("Processing complete. Uploading: 0%")
     upload_cb = create_upload_progress(client, chat_id, progress_msg)
@@ -386,7 +299,7 @@ async def process_watermark(client, message, state, chat_id):
     del user_state[chat_id]
 
 async def process_overlay(client, message, state, chat_id):
-    # (Process_overlay remains unchanged)
+    # (Overlay processing remains unchanged)
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
 
