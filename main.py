@@ -39,7 +39,6 @@ def create_download_progress(client, chat_id, progress_msg: Message):
             percent = (current / total) * 100
             if percent - last_update >= 5 or percent >= 100:
                 try:
-                    # Use the Message object's edit_text() method.
                     await progress_msg.edit_text(f"Downloading: {percent:.2f}%")
                     last_update = percent
                 except Exception as e:
@@ -277,6 +276,7 @@ async def process_watermark(client, message, state, chat_id):
     await progress_msg.edit_text("Download complete. Watermarking started.")
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
     if state['mode'] in ['watermark', 'harrypotter']:
+        # Use the default filter for these modes.
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
             f"fontcolor={state['font_color']}:" 
@@ -285,8 +285,10 @@ async def process_watermark(client, message, state, chat_id):
             f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
         )
     elif state['mode'] == 'watermarktm':
+        # For watermarktm, add Courier New font.
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
+            f"font='Courier New':"
             f"fontcolor={state['font_color']}:" 
             f"fontsize={state['font_size']}:" 
             f"x='mod(t\\,30)*30':"
@@ -309,6 +311,7 @@ async def process_watermark(client, message, state, chat_id):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT
     )
+    # No incremental processing updates during watermarking.
     await proc.wait()
     if proc.returncode != 0:
         logger.error(f"Error processing watermark. Return code: {proc.returncode}")
