@@ -237,10 +237,13 @@ async def process_watermark(client, message, state, chat_id):
 
     # Build the watermark filter.
     if state['mode'] == 'watermark':
+        # Animate watermark from bottom center to top center over the given duration.
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
-            f"fontcolor={state['font_color']}:fontsize={state['font_size']}:"
-            "x=(w-text_w)/2:y=h-text_h-10"
+            f"fontcolor={state['font_color']}:"
+            f"fontsize={state['font_size']}:"
+            f"x=(w-text_w)/2:"
+            f"y=(h-text_h-10)+((10-(h-text_h-10))*(t/{state['duration']}))"
         )
     elif state['mode'] == 'watermarktm':
         filter_str = (
