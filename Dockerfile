@@ -1,3 +1,4 @@
+# Existing Dockerfile content
 FROM python:3.9-slim
 
 # Install FFmpeg and build dependencies.
@@ -14,5 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of your application code
 COPY . .
+
+# Copy the Courier New font to the image
+COPY Courier_New.ttf /usr/share/fonts/truetype/Courier_New.ttf
 
 CMD gunicorn app:app & python3 main.py
