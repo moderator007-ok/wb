@@ -275,6 +275,7 @@ async def process_watermark(client, message, state, chat_id):
     logger.info("Video download completed.")
     await progress_msg.edit_text("Download complete. Watermarking started.")
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
+    font_path = "/usr/share/fonts/truetype/cour.ttf"  # Path to Courier New font in the Docker image
     if state['mode'] in ['watermark', 'harrypotter']:
         # Use the default filter for these modes.
         filter_str = (
@@ -285,10 +286,10 @@ async def process_watermark(client, message, state, chat_id):
             f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
         )
     elif state['mode'] == 'watermarktm':
-        # For watermarktm, add Courier New font.
+        # For watermarktm, use Courier New font.
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
-            f"font='Courier New':"
+            f"fontfile={font_path}:"
             f"fontcolor={state['font_color']}:" 
             f"fontsize={state['font_size']}:" 
             f"x='mod(t\\,30)*30':"
@@ -311,7 +312,6 @@ async def process_watermark(client, message, state, chat_id):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT
     )
-    # No incremental processing updates during watermarking.
     await proc.wait()
     if proc.returncode != 0:
         logger.error(f"Error processing watermark. Return code: {proc.returncode}")
