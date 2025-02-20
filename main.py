@@ -605,14 +605,6 @@ async def process_imgwatermark(client, message, state, chat_id):
     if chat_id in user_state:
         del user_state[chat_id]
 
-async def main():
-    await app.start()
-    try:
-        await app.run()
-    except Exception as e:
-        logger.error("Error during app.run(): " + str(e))
-    finally:
-        await app.stop()
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Start the bot using Pyrogram's built-in run() method.
+    app.run()
