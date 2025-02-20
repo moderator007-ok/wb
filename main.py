@@ -63,7 +63,7 @@ async def watermark_cmd(client, message: Message):
 @app.on_message(filters.command("watermarktm") & filters.private)
 async def watermarktm_cmd(client, message: Message):
     chat_id = message.chat.id
-    # watermarktm mode: apply watermark for full length.
+    # watermarktm mode: apply watermark (animated) over the full length.
     # Only ask for text, size, and color.
     user_state[chat_id] = {
         'mode': 'watermarktm',
@@ -72,7 +72,7 @@ async def watermarktm_cmd(client, message: Message):
         'watermark_text': None,
         'font_size': None,
         'font_color': None,
-        # duration will not be used in watermarktm mode.
+        # duration is not used in full-length mode.
         'step': 'await_video'
     }
     await message.reply_text("Send video.")
@@ -136,7 +136,7 @@ async def video_handler(client, message: Message):
         state['step'] = 'await_text'
         await message.reply_text("Video captured. Now send the watermark text.")
     elif mode == 'watermarktm':
-        # For watermarktm, capture video and then ask for text.
+        # For watermarktm, capture video then ask for text.
         if state.get('step') != 'await_video':
             return
         state['video_message'] = message
@@ -205,7 +205,6 @@ async def text_handler(client, message: Message):
                 state['font_color'] = "red"
             else:
                 state['font_color'] = "white"
-            # For standard /watermark, ask for duration next.
             if mode == 'watermark':
                 state['step'] = 'await_duration'
                 await message.reply_text("Color received. Now send the duration (in seconds) during which the watermark should appear.")
@@ -214,7 +213,6 @@ async def text_handler(client, message: Message):
                 state['step'] = 'processing'
                 await message.reply_text("All inputs collected. Processing full-length watermark video, please wait...")
                 await process_watermark(client, message, state, chat_id)
-
     elif mode == 'overlay':
         if current_step == 'await_duration':
             try:
@@ -248,20 +246,17 @@ async def process_watermark(client, message, state, chat_id):
     await progress_msg.edit_text("Download complete. Processing: 0%")
 
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
-
     # Build the animated watermark filter.
-    # It uses mod(t\,30) so the vertical animation loops every 30 seconds.
+    # For both /watermark and /harrypotter, watermark is applied only for a specified duration.
     filter_str = (
         f"drawtext=text='{state['watermark_text']}':"
-        f"fontcolor={state['font_color']}:"
-        f"fontsize={state['font_size']}:"
-        f"x=(w-text_w)/2:"
+        f"fontcolor={state['font_color']}:" 
+        f"fontsize={state['font_size']}:" 
+        f"x=(w-text_w)/2:" 
         f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
     )
 
-    # Branch based on mode:
-    if state['mode'] == 'watermark' or state['mode'] == 'harrypotter':
-        # In these modes, watermark is applied only for a specified duration.
+    if state['mode'] in ['watermark', 'harrypotter']:
         duration = state['duration']
         seg1 = os.path.join(temp_dir, f"{base_name}_seg1.mp4")
         seg2 = os.path.join(temp_dir, f"{base_name}_seg2.mp4")
@@ -307,6 +302,7 @@ async def process_watermark(client, message, state, chat_id):
             FFMPEG_PATH,
             "-ss", str(duration),
             "-i", input_file_path,
+            "-reset_timestamps", "1",
             "-c", "copy",
             seg2
         ]
@@ -347,10 +343,11 @@ async def process_watermark(client, message, state, chat_id):
             del user_state[chat_id]
             return
     elif state['mode'] == 'watermarktm':
-        # For watermarktm, apply watermark filter over the entire video.
+        # For watermarktm, apply the watermark filter over the entire video.
         output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
         ffmpeg_cmd = [
             FFMPEG_PATH,
+            "-fflags", "+genpts",  # Regenerate timestamps.
             "-i", input_file_path,
             "-vf", filter_str,
             "-c:v", "libx264", "-crf", "23", "-preset", "medium",
