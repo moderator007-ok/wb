@@ -13,31 +13,31 @@ from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 # Allowed admin IDs for /stop and /restart commands.
 ALLOWED_ADMINS = [640815756, 5317760109]
 
-# ─── Global Queue & Active Flag ───────────────────────────────
+# ─── Global Queue & Active Flag for Sequential Processing ─────────
 processing_queue = asyncio.Queue()
 processing_active = False
 
 async def enqueue_task(func, client, message, state, chat_id):
-    global processing_active
     async def task_func():
-        global processing_active
-        processing_active = True
         try:
             await func(client, message, state, chat_id)
-        finally:
-            processing_active = False
+        except Exception as e:
+            logger.error("Error in processing task: " + str(e))
     # If a process is already running or queued, inform the user.
     if processing_active or processing_queue.qsize() > 0:
         await message.reply_text("A process is already running; your process is queued.")
     await processing_queue.put(task_func)
 
 async def processing_worker():
+    global processing_active
     while True:
         task_func = await processing_queue.get()
+        processing_active = True
         try:
             await task_func()
         except Exception as e:
             logger.error("Error in processing task: " + str(e))
+        processing_active = False
         processing_queue.task_done()
 
 # ─── Logging Configuration ─────────────────────────────────────
@@ -89,7 +89,7 @@ async def stop_cmd(client, message: Message):
     if message.chat.id not in ALLOWED_ADMINS:
         await message.reply_text("Unauthorized.")
         return
-    # Clear the queue
+    # Clear the processing queue.
     while not processing_queue.empty():
         try:
             processing_queue.get_nowait()
@@ -254,13 +254,11 @@ async def text_handler(client, message: Message):
             await message.reply_text("All inputs collected. Processing full-length watermark video, please wait...")
             await enqueue_task(process_watermark, client, message, state, chat_id)
     elif mode == 'harrypotter':
-        # Preset mode already has inputs.
         pass
     elif mode == 'overlay':
-        # (Overlay text input handling if needed.)
         pass
 
-# ─── Processing Functions (Queued, Sequential) ───────────────────
+# ─── Processing Functions (Sequential Queue) ─────────────────────
 async def process_watermark(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
@@ -613,8 +611,12 @@ async def process_imgwatermark(client, message, state, chat_id):
 async def main():
     await app.start()
     asyncio.create_task(processing_worker())
-    await app.idle()
-    await app.stop()
+    try:
+        await app.idle()
+    except KeyboardInterrupt:
+        logger.info("Bot interrupted by user.")
+    finally:
+        await app.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
