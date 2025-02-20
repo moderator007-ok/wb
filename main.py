@@ -13,6 +13,33 @@ from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 # Allowed admin IDs for /stop and /restart commands.
 ALLOWED_ADMINS = [640815756, 5317760109]
 
+# ─── Global Queue & Active Flag ───────────────────────────────
+processing_queue = asyncio.Queue()
+processing_active = False
+
+async def enqueue_task(func, client, message, state, chat_id):
+    global processing_active
+    async def task_func():
+        global processing_active
+        processing_active = True
+        try:
+            await func(client, message, state, chat_id)
+        finally:
+            processing_active = False
+    # If a process is already running or queued, inform the user.
+    if processing_active or processing_queue.qsize() > 0:
+        await message.reply_text("A process is already running; your process is queued.")
+    await processing_queue.put(task_func)
+
+async def processing_worker():
+    while True:
+        task_func = await processing_queue.get()
+        try:
+            await task_func()
+        except Exception as e:
+            logger.error("Error in processing task: " + str(e))
+        processing_queue.task_done()
+
 # ─── Logging Configuration ─────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -27,25 +54,33 @@ app = Client("watermark_robot_2", api_id=API_ID, api_hash=API_HASH, bot_token=BO
 # Dictionary to track per-chat state.
 user_state = {}
 
-# ─── Progress Callback Factories ───────────────────────────────
+# ─── Progress Callback Factories (Throttled at 5% increments) ─────
 def create_download_progress(client, chat_id, progress_msg):
+    last_update = 0
     async def progress(current, total):
+        nonlocal last_update
         if total:
             percent = (current / total) * 100
-            try:
-                await client.edit_message_text(chat_id, progress_msg.id, f"Downloading: {percent:.2f}%")
-            except Exception as e:
-                logger.error("Error updating download progress: " + str(e))
+            if percent - last_update >= 5 or percent >= 100:
+                try:
+                    await client.edit_message_text(chat_id, progress_msg.id, f"Downloading: {percent:.2f}%")
+                    last_update = percent
+                except Exception as e:
+                    logger.error("Error updating download progress: " + str(e))
     return progress
 
 def create_upload_progress(client, chat_id, progress_msg):
+    last_update = 0
     async def progress(current, total):
+        nonlocal last_update
         if total:
             percent = (current / total) * 100
-            try:
-                await client.edit_message_text(chat_id, progress_msg.id, f"Uploading: {percent:.2f}%")
-            except Exception as e:
-                logger.error("Error updating upload progress: " + str(e))
+            if percent - last_update >= 5 or percent >= 100:
+                try:
+                    await client.edit_message_text(chat_id, progress_msg.id, f"Uploading: {percent:.2f}%")
+                    last_update = percent
+                except Exception as e:
+                    logger.error("Error updating upload progress: " + str(e))
     return progress
 
 # ─── Admin Commands: /stop and /restart ─────────────────────────
@@ -54,14 +89,14 @@ async def stop_cmd(client, message: Message):
     if message.chat.id not in ALLOWED_ADMINS:
         await message.reply_text("Unauthorized.")
         return
-    state = user_state.get(message.chat.id)
-    if state and "task" in state:
-        task = state["task"]
-        task.cancel()
-        await message.reply_text("Processing task stopped.")
-        del state["task"]
-    else:
-        await message.reply_text("No processing task is running.")
+    # Clear the queue
+    while not processing_queue.empty():
+        try:
+            processing_queue.get_nowait()
+            processing_queue.task_done()
+        except asyncio.QueueEmpty:
+            break
+    await message.reply_text("All queued processing tasks have been cleared.")
 
 @app.on_message(filters.command("restart") & filters.private)
 async def restart_cmd(client, message: Message):
@@ -157,7 +192,7 @@ async def video_handler(client, message: Message):
         state['video_message'] = message
         state['step'] = 'processing'
         await message.reply_text("Video captured. Processing preset watermark.")
-        state['task'] = asyncio.create_task(process_watermark(client, message, state, chat_id))
+        await enqueue_task(process_watermark, client, message, state, chat_id)
     elif mode == 'overlay':
         if state.get('step') == 'await_main':
             state['main_video_message'] = message
@@ -181,7 +216,7 @@ async def image_handler(client, message: Message):
         state['image_message'] = message
         state['step'] = 'processing'
         await message.reply_text("Image received. Processing video with image watermark, please wait...")
-        state['task'] = asyncio.create_task(process_imgwatermark(client, message, state, chat_id))
+        await enqueue_task(process_imgwatermark, client, message, state, chat_id)
 
 # ─── Text Handler for Inputs ─────────────────────────────────────
 @app.on_message(filters.text & filters.private)
@@ -217,13 +252,15 @@ async def text_handler(client, message: Message):
                 state['font_color'] = "white"
             state['step'] = 'processing'
             await message.reply_text("All inputs collected. Processing full-length watermark video, please wait...")
-            state['task'] = asyncio.create_task(process_watermark(client, message, state, chat_id))
+            await enqueue_task(process_watermark, client, message, state, chat_id)
     elif mode == 'harrypotter':
+        # Preset mode already has inputs.
         pass
     elif mode == 'overlay':
+        # (Overlay text input handling if needed.)
         pass
 
-# ─── Processing Functions ─────────────────────────────────────────
+# ─── Processing Functions (Queued, Sequential) ───────────────────
 async def process_watermark(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
@@ -286,7 +323,7 @@ async def process_watermark(client, message, state, chat_id):
             try:
                 out_time_ms = int(line.split("=")[1])
                 seconds = out_time_ms / 1000000  # Convert microseconds to seconds
-                # Update progress if at least 60 seconds have passed or at 2400 seconds
+                # Update progress if at least 60 seconds have passed or if processed time >= 2400 seconds.
                 if seconds - last_update >= 60 or seconds >= 2400:
                     await progress_msg.edit_message_text(f"Processing: {int(seconds)} s processed")
                     last_update = seconds
@@ -573,5 +610,11 @@ async def process_imgwatermark(client, message, state, chat_id):
     if chat_id in user_state:
         del user_state[chat_id]
 
+async def main():
+    await app.start()
+    asyncio.create_task(processing_worker())
+    await app.idle()
+    await app.stop()
+
 if __name__ == "__main__":
-    app.run()
+    asyncio.run(main())
