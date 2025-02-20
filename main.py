@@ -275,7 +275,7 @@ async def process_watermark(client, message, state, chat_id):
     logger.info("Video download completed.")
     await progress_msg.edit_text("Download complete. Watermarking started.")
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
-    font_path = "/usr/share/fonts/truetype/cour.ttf"  # Path to Courier New font in the Docker image
+    font_path = "/usr/share/fonts/truetype/consola.ttf"  # Path to Consolas font in the Docker image
     if state['mode'] in ['watermark', 'harrypotter']:
         # Use the default filter for these modes.
         filter_str = (
@@ -286,12 +286,14 @@ async def process_watermark(client, message, state, chat_id):
             f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
         )
     elif state['mode'] == 'watermarktm':
-        # For watermarktm, use Courier New font.
+        # For watermarktm, use Consolas or Courier New font with monospace style and normal weight.
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
             f"fontfile={font_path}:"
             f"fontcolor={state['font_color']}:" 
             f"fontsize={state['font_size']}:" 
+            f"font='Consolas, Courier New, monospace':"
+            f"fontweight=normal:"
             f"x='mod(t\\,30)*30':"
             f"y='mod(t\\,30)*15'"
         )
