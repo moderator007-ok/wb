@@ -23,7 +23,6 @@ app = Client("watermark_robot_2", api_id=API_ID, api_hash=API_HASH, bot_token=BO
 user_state = {}
 
 # ─── Progress Callback Factories ───────────────────────────────
-# These helper functions create progress callbacks that update a given message.
 def create_download_progress(client, chat_id, progress_msg):
     async def progress(current, total):
         if total:
@@ -44,8 +43,7 @@ def create_upload_progress(client, chat_id, progress_msg):
                 logger.error("Error updating upload progress: " + str(e))
     return progress
 
-# ─── Command Handlers ────────────────────────────────────────────
-
+# ─── Command Handlers ───────────────────────────────────────────
 @app.on_message(filters.command("watermark") & filters.private)
 async def watermark_cmd(client, message: Message):
     chat_id = message.chat.id
@@ -103,7 +101,7 @@ async def imgwatermark_cmd(client, message: Message):
     }
     await message.reply_text("Send video for image watermarking.")
 
-# ─── Video Handler ───────────────────────────────────────────────
+# ─── Video Handler ─────────────────────────────────────────────
 @app.on_message(filters.private & (filters.video | filters.document))
 async def video_handler(client, message: Message):
     chat_id = message.chat.id
@@ -120,8 +118,7 @@ async def video_handler(client, message: Message):
         await message.reply_text("Video captured. Now send the watermark text.")
 
     elif mode == 'overlay':
-        current_step = state.get('step')
-        if current_step == 'await_main':
+        if state.get('step') == 'await_main':
             state['main_video_message'] = message
             state['step'] = 'await_overlay'
             await message.reply_text("Main video received. Now send the **overlay video** (with green screen background).")
@@ -203,15 +200,11 @@ async def text_handler(client, message: Message):
                 await message.reply_text("Invalid duration. Please send a number in seconds.")
 
 # ─── Processing Functions ─────────────────────────────────────────
-
 async def process_watermark(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
 
-    # Send a progress message for downloading.
     progress_msg = await client.send_message(chat_id, "Downloading: 0%")
-
-    # Download the input video.
     video_msg = state['video_message']
     if video_msg.video:
         file_name = video_msg.video.file_name or f"{video_msg.video.file_id}.mp4"
@@ -230,20 +223,18 @@ async def process_watermark(client, message, state, chat_id):
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
     duration = state['duration']
 
-    # Prepare segment file paths.
     seg1 = os.path.join(temp_dir, f"{base_name}_seg1.mp4")
     seg2 = os.path.join(temp_dir, f"{base_name}_seg2.mp4")
     output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
 
-    # Build the watermark filter.
+    # Updated watermark filter with looping every 30 seconds and escaped comma.
     if state['mode'] == 'watermark':
-        # The watermark animation now loops every 30 seconds.
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
             f"fontcolor={state['font_color']}:"
             f"fontsize={state['font_size']}:"
             f"x=(w-text_w)/2:"
-            f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t,30)/30))"
+            f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
         )
     elif state['mode'] == 'watermarktm':
         filter_str = (
@@ -253,7 +244,6 @@ async def process_watermark(client, message, state, chat_id):
             "x='mod(t\\,30)*30':y='mod(t\\,30)*15'"
         )
 
-    # Process segment 1 with watermark filter.
     ffmpeg_cmd1 = [
         FFMPEG_PATH,
         "-i", input_file_path,
@@ -288,7 +278,6 @@ async def process_watermark(client, message, state, chat_id):
         del user_state[chat_id]
         return
 
-    # Process segment 2: copy remaining part without watermark.
     ffmpeg_cmd2 = [
         FFMPEG_PATH,
         "-ss", str(duration),
@@ -308,7 +297,6 @@ async def process_watermark(client, message, state, chat_id):
         del user_state[chat_id]
         return
 
-    # Concatenate segments.
     concat_file = os.path.join(temp_dir, "concat_list.txt")
     with open(concat_file, "w") as f:
         f.write(f"file '{seg1}'\n")
@@ -333,7 +321,6 @@ async def process_watermark(client, message, state, chat_id):
         del user_state[chat_id]
         return
 
-    # Update progress to uploading.
     await progress_msg.edit_text("Processing complete. Uploading: 0%")
     upload_cb = create_upload_progress(client, chat_id, progress_msg)
     try:
@@ -357,7 +344,6 @@ async def process_overlay(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
 
-    # Download main video with progress.
     progress_msg = await client.send_message(chat_id, "Downloading main video: 0%")
     main_msg = state['main_video_message']
     if main_msg.video:
@@ -373,7 +359,6 @@ async def process_overlay(client, message, state, chat_id):
     logger.info("Main video downloaded.")
     await progress_msg.edit_text("Main video downloaded.")
 
-    # Download overlay video.
     await progress_msg.edit_text("Downloading overlay video: 0%")
     overlay_msg = state['overlay_video_message']
     if overlay_msg.video:
@@ -389,7 +374,6 @@ async def process_overlay(client, message, state, chat_id):
     logger.info("Overlay video downloaded.")
     await progress_msg.edit_text("Overlay video downloaded.")
 
-    # Pre-process overlay video to remove green screen.
     await progress_msg.edit_text("Pre-processing overlay video...")
     processed_overlay_path = os.path.join(temp_dir, "processed_overlay.mov")
     pre_process_cmd = [
@@ -417,7 +401,6 @@ async def process_overlay(client, message, state, chat_id):
     seg2 = os.path.join(temp_dir, f"{base_name}_seg2.mp4")
     output_file = os.path.join(temp_dir, f"{base_name}_overlay.mp4")
 
-    # Process segment 1 with overlay.
     ffmpeg_cmd1 = [
         FFMPEG_PATH,
         "-i", main_file_path,
@@ -453,7 +436,6 @@ async def process_overlay(client, message, state, chat_id):
         del user_state[chat_id]
         return
 
-    # Process segment 2: copy the remaining part.
     ffmpeg_cmd2 = [
         FFMPEG_PATH,
         "-ss", str(duration),
@@ -473,7 +455,6 @@ async def process_overlay(client, message, state, chat_id):
         del user_state[chat_id]
         return
 
-    # Concatenate segments.
     concat_file = os.path.join(temp_dir, "concat_list.txt")
     with open(concat_file, "w") as f:
         f.write(f"file '{seg1}'\n")
