@@ -50,7 +50,6 @@ async def watermark_cmd(client, message: Message):
     user_state[chat_id] = {
         'mode': 'watermark',
         'video_message': None,
-        'video_file': None,
         'temp_dir': None,
         'watermark_text': None,
         'font_size': None,
@@ -66,7 +65,6 @@ async def watermarktm_cmd(client, message: Message):
     user_state[chat_id] = {
         'mode': 'watermarktm',
         'video_message': None,
-        'video_file': None,
         'temp_dir': None,
         'watermark_text': None,
         'font_size': None,
@@ -75,6 +73,22 @@ async def watermarktm_cmd(client, message: Message):
         'step': 'await_video'
     }
     await message.reply_text("Send video.")
+
+@app.on_message(filters.command("harrypotter") & filters.private)
+async def harrypotter_cmd(client, message: Message):
+    chat_id = message.chat.id
+    # Preset values: Text @VictoryAnthem, Size 32, Colour Black, Duration 600 seconds.
+    user_state[chat_id] = {
+        'mode': 'harrypotter',  # We'll treat this like a watermark preset.
+        'video_message': None,
+        'temp_dir': None,
+        'watermark_text': "@VictoryAnthem",
+        'font_size': 32,
+        'font_color': "black",
+        'duration': 600,
+        'step': 'await_video'
+    }
+    await message.reply_text("Harry Potter preset activated. Send video.")
 
 @app.on_message(filters.command("overlay") & filters.private)
 async def overlay_cmd(client, message: Message):
@@ -109,20 +123,25 @@ async def video_handler(client, message: Message):
         return
     state = user_state[chat_id]
     mode = state.get('mode')
-
+    
+    # For watermark, watermarktm, and harrypotter modes:
     if mode in ['watermark', 'watermarktm']:
         if state.get('step') != 'await_video':
             return
         state['video_message'] = message
         state['step'] = 'await_text'
         await message.reply_text("Video captured. Now send the watermark text.")
-
+    elif mode == 'harrypotter':
+        # Preset values; skip further input.
+        state['video_message'] = message
+        state['step'] = 'processing'
+        await message.reply_text("Video captured. Processing preset watermark.")
+        await process_watermark(client, message, state, chat_id)
     elif mode == 'overlay':
         if state.get('step') == 'await_main':
             state['main_video_message'] = message
             state['step'] = 'await_overlay'
             await message.reply_text("Main video received. Now send the **overlay video** (with green screen background).")
-
     elif mode == 'imgwatermark':
         if state.get('step') != 'await_video':
             return
@@ -227,8 +246,8 @@ async def process_watermark(client, message, state, chat_id):
     seg2 = os.path.join(temp_dir, f"{base_name}_seg2.mp4")
     output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
 
-    # Updated watermark filter with looping every 30 seconds and escaped comma.
-    if state['mode'] == 'watermark':
+    # For both /watermark and /harrypotter (preset), use the same animated filter.
+    if state['mode'] in ['watermark', 'harrypotter']:
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
             f"fontcolor={state['font_color']}:"
