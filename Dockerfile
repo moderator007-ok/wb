@@ -17,6 +17,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Copy the Courier New font to the image
-COPY Courier_New.ttf /usr/share/fonts/truetype/Courier_New.ttf
+COPY cour.ttf /usr/share/fonts/truetype/cour.ttf
 
 CMD gunicorn app:app & python3 main.py
