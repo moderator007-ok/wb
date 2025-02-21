@@ -26,11 +26,9 @@ logger = logging.getLogger(__name__)
 
 # ─── Initialize the Pyrogram Client ───────────────────────────
 app = Client("watermark_robot_2", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# Dictionary to track per-chat state.
 user_state = {}
 
-# ─── Progress Callback Factories (Throttled at 5% increments) ─────
+# ─── Progress Callback Factories (Download/Upload) ───────────────
 def create_download_progress(client, chat_id, progress_msg: Message):
     last_update = 0
     async def progress(current, total):
@@ -256,7 +254,27 @@ async def text_handler(client, message: Message):
     elif mode == 'overlay':
         pass
 
-# ─── Processing Functions ─────────────────────────────────────────
+# ─── Helper Function: Get Video Duration Using ffprobe ─────────────
+async def get_video_duration(file_path):
+    """
+    Returns the video duration in seconds using ffprobe.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    try:
+        return float(stdout.decode().strip())
+    except Exception as e:
+        logger.error("Error getting video duration: " + str(e))
+        return 0
+
+# ─── Modified process_watermark Function ──────────────────────────
 async def process_watermark(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
@@ -273,25 +291,31 @@ async def process_watermark(client, message, state, chat_id):
     logger.info("Starting video download...")
     await video_msg.download(file_name=input_file_path, progress=download_cb)
     logger.info("Video download completed.")
-    await progress_msg.edit_text("Download complete. Watermarking started.")
+    
+    # Instead of editing the same message, send a new message for the next step.
+    await client.send_message(chat_id, "Download complete. Watermarking started.")
+    
+    # Get video duration for progress calculation
+    duration_sec = await get_video_duration(input_file_path)
+    total_ms = duration_sec * 1000 if duration_sec > 0 else 1  # safeguard against zero
+    
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
-    font_path = "/usr/share/fonts/truetype/consola.ttf"  # Path to Consolas font in the Docker image
+    font_path = "/usr/share/fonts/truetype/consola.ttf"  # adjust path if needed
+
     if state['mode'] in ['watermark', 'harrypotter']:
-        # Use the default filter for these modes.
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
-            f"fontcolor={state['font_color']}:" 
-            f"fontsize={state['font_size']}:" 
+            f"fontcolor={state['font_color']}:"
+            f"fontsize={state['font_size']}:"
             f"x=(w-text_w)/2:"
             f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
         )
     elif state['mode'] == 'watermarktm':
-        # For watermarktm, use Consolas or Courier New font with monospace style and normal weight.
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
             f"fontfile={font_path}:"
-            f"fontcolor={state['font_color']}:" 
-            f"fontsize={state['font_size']}:" 
+            f"fontcolor={state['font_color']}:"
+            f"fontsize={state['font_size']}:"
             f"font='Consolas, Courier New, monospace':"
             f"fontweight=normal:"
             f"x='mod(t\\,30)*30':"
@@ -314,7 +338,28 @@ async def process_watermark(client, message, state, chat_id):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT
     )
+    
+    # Read ffmpeg progress output and send a new log message every 10% progress.
+    last_logged = 0
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        decoded_line = line.decode('utf-8').strip()
+        logger.info(decoded_line)
+        if decoded_line.startswith("out_time_ms="):
+            try:
+                out_time_ms = int(decoded_line.split("=")[1])
+                current_percent = (out_time_ms / total_ms) * 100
+                if current_percent - last_logged >= 10:
+                    last_logged = current_percent - (current_percent % 10)
+                    await client.send_message(chat_id, f"Watermark processing: {last_logged:.0f}% completed")
+            except Exception as e:
+                logger.error("Error parsing ffmpeg progress: " + str(e))
+        if decoded_line == "progress=end":
+            break
     await proc.wait()
+    
     if proc.returncode != 0:
         logger.error(f"Error processing watermark. Return code: {proc.returncode}")
         await message.reply_text("Error processing watermarked video.")
@@ -322,7 +367,9 @@ async def process_watermark(client, message, state, chat_id):
         if chat_id in user_state:
             del user_state[chat_id]
         return
-    await progress_msg.edit_text("Watermarking complete. Uploading: 0%")
+    
+    # Send a new message before starting the upload process.
+    await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
     upload_cb = create_upload_progress(client, chat_id, progress_msg)
     try:
         logger.info("Uploading watermarked video...")
@@ -341,6 +388,7 @@ async def process_watermark(client, message, state, chat_id):
     if chat_id in user_state:
         del user_state[chat_id]
 
+# ─── Processing Functions for Overlay and Image Watermark (Unchanged) ─────────────────────────
 async def process_overlay(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
@@ -512,7 +560,7 @@ async def process_overlay(client, message, state, chat_id):
         logger.info("Upload completed successfully.")
         await progress_msg.edit_text("Upload complete.")
     except Exception as e:
-        logger.error(f"Error sending overlaid video for chat {chat_id}: {e}")
+        logger.error(f"Error sending video for chat {chat_id}: {e}")
         await message.reply_text("Failed to send overlaid video.")
     shutil.rmtree(temp_dir)
     if chat_id in user_state:
@@ -521,7 +569,7 @@ async def process_overlay(client, message, state, chat_id):
 async def process_imgwatermark(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
-    progress_msg = await client.send_message(chat_id, "Downloading video: 0%")
+    progress_msg = await client.send_message(chat_id, "Downloading: 0%")
     video_msg = state['video_message']
     if video_msg.video:
         file_name = video_msg.video.file_name or f"{video_msg.video.file_id}.mp4"
@@ -529,35 +577,37 @@ async def process_imgwatermark(client, message, state, chat_id):
         file_name = video_msg.document.file_name or f"{video_msg.document.file_id}.mp4"
     else:
         file_name = "input_video.mp4"
-    input_video_path = os.path.join(temp_dir, file_name)
+    input_file_path = os.path.join(temp_dir, file_name)
     download_cb = create_download_progress(client, chat_id, progress_msg)
-    logger.info("Downloading video for image watermark...")
-    await video_msg.download(file_name=input_video_path, progress=download_cb)
-    logger.info("Video downloaded.")
-    await progress_msg.edit_text("Video downloaded. Downloading image: 0%")
+    logger.info("Starting video download for image watermark...")
+    await video_msg.download(file_name=input_file_path, progress=download_cb)
+    logger.info("Video download completed.")
+    await progress_msg.edit_text("Video downloaded. Downloading image...")
     image_msg = state['image_message']
     if image_msg.photo:
-        file_name_img = "watermark.png"
+        image_file = await client.download_media(image_msg)
     elif image_msg.document:
-        file_name_img = image_msg.document.file_name or f"{image_msg.document.file_id}.png"
+        image_file = await client.download_media(image_msg)
     else:
-        file_name_img = "watermark.png"
-    input_image_path = os.path.join(temp_dir, file_name_img)
-    download_cb = create_download_progress(client, chat_id, progress_msg)
-    logger.info("Downloading watermark image...")
-    await image_msg.download(file_name=input_image_path, progress=download_cb)
-    logger.info("Watermark image downloaded.")
-    await progress_msg.edit_text("Image downloaded. Processing video...")
-    output_file = os.path.join(temp_dir, "output_imgwatermark.mp4")
+        image_file = None
+    if not image_file:
+        await message.reply_text("Error downloading image.")
+        shutil.rmtree(temp_dir)
+        if chat_id in user_state:
+            del user_state[chat_id]
+        return
+    await progress_msg.edit_text("Image downloaded. Processing watermark...")
+    output_file = os.path.join(temp_dir, "img_watermarked.mp4")
+    filter_str = f"movie={image_file}[wm];[in][wm]overlay=10:10[out]"
     ffmpeg_cmd = [
         FFMPEG_PATH,
-        "-i", input_video_path,
-        "-i", input_image_path,
-        "-filter_complex", "[1:v]scale=-1:32[wm];[0:v][wm]overlay=10:10",
+        "-i", input_file_path,
+        "-vf", filter_str,
+        "-c:v", "libx264", "-crf", "23", "-preset", "medium",
         "-c:a", "copy",
         output_file
     ]
-    logger.info("Processing video with image watermark...")
+    logger.info("Starting image watermarking process...")
     proc = await asyncio.create_subprocess_exec(
         *ffmpeg_cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -571,29 +621,25 @@ async def process_imgwatermark(client, message, state, chat_id):
     await proc.wait()
     if proc.returncode != 0:
         logger.error(f"Error processing image watermark. Return code: {proc.returncode}")
-        await message.reply_text("Error processing image watermark.")
+        await message.reply_text("Error processing image watermarked video.")
         shutil.rmtree(temp_dir)
         if chat_id in user_state:
             del user_state[chat_id]
         return
-    await progress_msg.edit_text("Processing complete. Uploading: 0%")
-    upload_cb = create_upload_progress(client, chat_id, progress_msg)
+    await progress_msg.edit_text("Processing complete. Uploading...")
     try:
-        logger.info("Uploading image-watermarked video...")
+        logger.info("Uploading image watermarked video...")
         await client.send_video(
             chat_id,
             video=output_file,
-            caption="Here is your video with the image watermark applied.",
-            progress=upload_cb
+            caption="Here is your video with image watermark applied."
         )
         logger.info("Upload completed successfully.")
-        await progress_msg.edit_text("Upload complete.")
     except Exception as e:
-        logger.error(f"Error sending image-watermarked video for chat {chat_id}: {e}")
-        await message.reply_text("Failed to send image-watermarked video.")
+        logger.error(f"Error sending video for chat {chat_id}: {e}")
+        await message.reply_text("Failed to send image watermarked video.")
     shutil.rmtree(temp_dir)
     if chat_id in user_state:
         del user_state[chat_id]
 
-if __name__ == "__main__":
-    app.run()
+app.run()
