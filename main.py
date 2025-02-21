@@ -325,7 +325,9 @@ async def process_watermark(client, message, state, chat_id):
     
     # Get video duration (in seconds) for progress calculation
     duration_sec = await get_video_duration(input_file_path)
-    total_ms = duration_sec * 1000 if duration_sec > 0 else 1  # safeguard against zero
+    if duration_sec <= 0:
+        duration_sec = 1  # safeguard
+    # Do not compute total_ms; we now work in seconds directly.
     
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
     font_path = "/usr/share/fonts/truetype/consola.ttf"  # adjust if needed
@@ -333,9 +335,9 @@ async def process_watermark(client, message, state, chat_id):
     if state['mode'] in ['watermark', 'harrypotter']:
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
-            f"fontcolor={state['font_color']}:"
-            f"fontsize={state['font_size']}:"
-            f"x=(w-text_w)/2:"
+            f"fontcolor={state['font_color']}:" 
+            f"fontsize={state['font_size']}:" 
+            f"x=(w-text_w)/2:" 
             f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
         )
     elif state['mode'] == 'watermarktm':
@@ -343,9 +345,9 @@ async def process_watermark(client, message, state, chat_id):
             f"drawtext=text='{state['watermark_text']}':"
             f"fontfile={font_path}:"
             f"fontcolor={state['font_color']}:" 
-            f"fontsize={state['font_size']}:"
+            f"fontsize={state['font_size']}:" 
             f"font='Consolas, Courier New, monospace':"
-            f"fontweight=normal:"
+            f"fontweight=normal:" 
             f"x='mod(t\\,30)*30':"
             f"y='mod(t\\,30)*15'"
         )
@@ -377,8 +379,10 @@ async def process_watermark(client, message, state, chat_id):
         logger.info(decoded_line)
         if decoded_line.startswith("out_time_ms="):
             try:
-                out_time_ms = int(decoded_line.split("=")[1])
-                current_percent = (out_time_ms / total_ms) * 100
+                # In the previous commit the value was divided by 1,000,000 to get seconds.
+                out_time_val = int(decoded_line.split("=")[1])
+                current_sec = out_time_val / 1000000.0
+                current_percent = (current_sec / duration_sec) * 100
                 if current_percent > 100:
                     current_percent = 100
                 if current_percent - last_logged >= 5 or current_percent == 100:
