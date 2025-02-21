@@ -264,6 +264,9 @@ async def text_handler(client, message: Message):
 async def get_video_duration(file_path):
     """
     Returns the video duration in seconds using ffprobe.
+    First, it attempts to get the container (format) duration. If that duration
+    is suspiciously low (e.g. less than 60 seconds) then it tries to get the 
+    video stream's duration and returns the maximum of both.
     """
     proc = await asyncio.create_subprocess_exec(
         "ffprobe", "-v", "error",
@@ -275,10 +278,29 @@ async def get_video_duration(file_path):
     )
     stdout, _ = await proc.communicate()
     try:
-        return float(stdout.decode().strip())
+        duration = float(stdout.decode().strip())
     except Exception as e:
-        logger.error("Error getting video duration: " + str(e))
-        return 0
+        logger.error("Error getting format duration: " + str(e))
+        duration = 0.0
+
+    # If duration appears too low, try getting the video stream's duration
+    if duration < 60:
+        proc2 = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout2, _ = await proc2.communicate()
+        try:
+            stream_duration = float(stdout2.decode().strip())
+            duration = max(duration, stream_duration)
+        except Exception as e:
+            logger.error("Error getting stream duration: " + str(e))
+    return duration
 
 # ─── Modified process_watermark Function ──────────────────────────
 async def process_watermark(client, message, state, chat_id):
@@ -298,15 +320,15 @@ async def process_watermark(client, message, state, chat_id):
     await video_msg.download(file_name=input_file_path, progress=download_cb)
     logger.info("Video download completed.")
     
-    # Update the same progress message for watermark processing.
+    # Update the same message to indicate watermarking is starting.
     await progress_msg.edit_text("Download complete. Watermarking started.")
     
-    # Get video duration for progress calculation
+    # Get video duration (in seconds) for progress calculation
     duration_sec = await get_video_duration(input_file_path)
     total_ms = duration_sec * 1000 if duration_sec > 0 else 1  # safeguard against zero
     
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
-    font_path = "/usr/share/fonts/truetype/consola.ttf"  # adjust path if needed
+    font_path = "/usr/share/fonts/truetype/consola.ttf"  # adjust if needed
 
     if state['mode'] in ['watermark', 'harrypotter']:
         filter_str = (
@@ -320,7 +342,7 @@ async def process_watermark(client, message, state, chat_id):
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
             f"fontfile={font_path}:"
-            f"fontcolor={state['font_color']}:"
+            f"fontcolor={state['font_color']}:" 
             f"fontsize={state['font_size']}:"
             f"font='Consolas, Courier New, monospace':"
             f"fontweight=normal:"
@@ -345,7 +367,7 @@ async def process_watermark(client, message, state, chat_id):
         stderr=asyncio.subprocess.STDOUT
     )
     
-    # Update progress every 5% increment (or at 100%) using the same progress_msg.
+    # Update progress every 5% increment (or at 100%) using the same message.
     last_logged = 0
     while True:
         line = await proc.stdout.readline()
