@@ -292,8 +292,8 @@ async def process_watermark(client, message, state, chat_id):
     await video_msg.download(file_name=input_file_path, progress=download_cb)
     logger.info("Video download completed.")
     
-    # Instead of editing the same message, send a new message for the next step.
-    await client.send_message(chat_id, "Download complete. Watermarking started.")
+    # Use the same progress message for watermarking progress (editing it).
+    await progress_msg.edit_text("Download complete. Watermarking started.")
     
     # Get video duration for progress calculation
     duration_sec = await get_video_duration(input_file_path)
@@ -339,7 +339,7 @@ async def process_watermark(client, message, state, chat_id):
         stderr=asyncio.subprocess.STDOUT
     )
     
-    # Read ffmpeg progress output and send a new log message every 10% progress.
+    # Update the same progress message while reading ffmpeg progress.
     last_logged = 0
     while True:
         line = await proc.stdout.readline()
@@ -351,9 +351,12 @@ async def process_watermark(client, message, state, chat_id):
             try:
                 out_time_ms = int(decoded_line.split("=")[1])
                 current_percent = (out_time_ms / total_ms) * 100
-                if current_percent - last_logged >= 10:
-                    last_logged = current_percent - (current_percent % 10)
-                    await client.send_message(chat_id, f"Watermark processing: {last_logged:.0f}% completed")
+                if current_percent > 100:
+                    current_percent = 100
+                # Update only if at least 10% increment (or if reached 100%)
+                if current_percent - last_logged >= 10 or current_percent == 100:
+                    last_logged = current_percent
+                    await progress_msg.edit_text(f"Watermark processing: {current_percent:.0f}% completed")
             except Exception as e:
                 logger.error("Error parsing ffmpeg progress: " + str(e))
         if decoded_line == "progress=end":
@@ -368,8 +371,8 @@ async def process_watermark(client, message, state, chat_id):
             del user_state[chat_id]
         return
     
-    # Send a new message before starting the upload process.
-    await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
+    # Update message before starting the upload process.
+    await progress_msg.edit_text("Watermarking complete. Uploading: 0%")
     upload_cb = create_upload_progress(client, chat_id, progress_msg)
     try:
         logger.info("Uploading watermarked video...")
