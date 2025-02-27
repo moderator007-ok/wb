@@ -350,15 +350,14 @@ async def process_watermark(client, message, state, chat_id):
         )
     elif state['mode'] == 'watermarktm':
         filter_str = (
-            f"drawtext=text='{state['watermark_text']}':"
-            f"fontfile={font_path}:"
-            f"fontcolor={state['font_color']}:" 
-            f"fontsize={state['font_size']}:" 
-            f"font='Consolas, Courier New, monospace':"
-            f"fontweight=normal:" 
-            f"x='mod(t\\,30)*30':"
-            f"y='mod(t\\,30)*15'"
-        )
+    f"drawtext:text='{state['watermark_text']}':"
+    f"fontfile={font_path}:"
+    f"fontcolor={state['font_color']}:" 
+    f"fontsize={state['font_size']}:" 
+    f"font='Consolas, Courier New, monospace':"
+    f"x='mod(t\\,30)*30':"
+    f"y='mod(t\\,30)*15'"
+)
     output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
     ffmpeg_cmd = [
         FFMPEG_PATH,
