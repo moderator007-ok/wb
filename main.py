@@ -1,4 +1,3 @@
-
 import os
 import sys
 import re
@@ -339,26 +338,30 @@ async def process_watermark(client, message, state, chat_id):
         duration_sec = 1  # safeguard
 
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
-    font_path = "/usr/share/fonts/truetype/consola.ttf"  # adjust if needed
+    # Set font_path based on the mode. For /watermarktm, use your custom font file "cour.ttf".
+    if state['mode'] == 'watermarktm':
+        font_path = "cour.ttf"  # Ensure "cour.ttf" is available in your working directory or specify full path.
+    else:
+        font_path = "/usr/share/fonts/truetype/consola.ttf"  # adjust if needed
 
     if state['mode'] in ['watermark', 'harrypotter']:
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
             f"fontcolor={state['font_color']}:" 
             f"fontsize={state['font_size']}:" 
-            f"x=(w-text_w)/2:" 
+            f"x=(w-text_w)/2:"
             f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
         )
     elif state['mode'] == 'watermarktm':
         filter_str = (
-    f"drawtext=text='{state['watermark_text']}':"
-    f"fontfile={font_path}:"
-    f"fontcolor={state['font_color']}:" 
-    f"fontsize={state['font_size']}:" 
-    f"font='Consolas, Courier New, monospace':"
-    f"x='mod(t\\,30)*30':"
-    f"y='mod(t\\,30)*15'"
-)
+            f"drawtext=text='{state['watermark_text']}':"
+            f"fontfile={font_path}:"
+            f"fontcolor={state['font_color']}:" 
+            f"fontsize={state['font_size']}:" 
+            f"font='Courier New':"
+            f"x='mod(t\\,30)*30':"
+            f"y='mod(t\\,30)*15'"
+        )
     output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
     ffmpeg_cmd = [
         FFMPEG_PATH,
