@@ -27,9 +27,10 @@ logger = logging.getLogger(__name__)
 
 # ─── Initialize the Pyrogram Client ───────────────────────────
 app = Client("watermark_robot_2", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Dictionary to track per-chat state.
 user_state = {}
 
-# ─── Progress Callback Factories (Download/Upload) ───────────────
+# ─── Progress Callback Factories (Throttled at 5% increments) ─────
 def create_download_progress(client, chat_id, progress_msg: Message):
     last_update = 0
     async def progress(current, total):
@@ -41,10 +42,7 @@ def create_download_progress(client, chat_id, progress_msg: Message):
                     await progress_msg.edit_text(f"Downloading: {percent:.2f}%")
                     last_update = percent
                 except Exception as e:
-                    if "MESSAGE_NOT_MODIFIED" in str(e):
-                        pass
-                    else:
-                        logger.error("Error updating download progress: " + str(e))
+                    logger.error("Error updating download progress: " + str(e))
     return progress
 
 def create_upload_progress(client, chat_id, progress_msg: Message):
@@ -58,10 +56,7 @@ def create_upload_progress(client, chat_id, progress_msg: Message):
                     await progress_msg.edit_text(f"Uploading: {percent:.2f}%")
                     last_update = percent
                 except Exception as e:
-                    if "MESSAGE_NOT_MODIFIED" in str(e):
-                        pass
-                    else:
-                        logger.error("Error updating upload progress: " + str(e))
+                    logger.error("Error updating upload progress: " + str(e))
     return progress
 
 # ─── Admin Commands: /stop and /restart ─────────────────────────
@@ -113,6 +108,26 @@ async def watermarktm_cmd(client, message: Message):
         'step': 'await_video'
     }
     await message.reply_text("Send video.")
+
+# ─── New Preset Command: /techmon ─────────────────────────
+@app.on_message(filters.command("techmon") & filters.private)
+async def techmon_cmd(client, message: Message):
+    """
+    Preset command for TECHMON.
+    Sets the watermark text to @TechMonUPSC_2, font color to black, and font size to 36.
+    This uses the same mode as watermarktm.
+    """
+    chat_id = message.chat.id
+    user_state[chat_id] = {
+        'mode': 'watermarktm',
+        'video_message': None,
+        'temp_dir': None,
+        'watermark_text': "@TechMonUPSC_2",
+        'font_size': 36,
+        'font_color': "black",
+        'step': 'await_video'
+    }
+    await message.reply_text("TECHMON preset activated. Send video.")
 
 @app.on_message(filters.command("harrypotter") & filters.private)
 async def harrypotter_cmd(client, message: Message):
@@ -284,7 +299,6 @@ async def get_video_duration(file_path):
         logger.error("Error getting format duration: " + str(e))
         duration = 0.0
 
-    # If duration appears too low, try getting the video stream's duration
     if duration < 60:
         proc2 = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error",
@@ -305,14 +319,9 @@ async def get_video_duration(file_path):
 
 # ─── Modified process_watermark Function ──────────────────────────
 async def process_watermark(client, message, state, chat_id):
-    # Try to send the initial progress message; if FloodWait occurs, skip updates.
-    try:
-        progress_msg = await client.send_message(chat_id, "Downloading: 0%")
-    except FloodWait:
-        progress_msg = None
-
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
+    progress_msg = await client.send_message(chat_id, "Downloading: 0%")
     video_msg = state['video_message']
     if video_msg.video:
         file_name = video_msg.video.file_name or f"{video_msg.video.file_id}.mp4"
@@ -321,28 +330,18 @@ async def process_watermark(client, message, state, chat_id):
     else:
         file_name = "input_video.mp4"
     input_file_path = os.path.join(temp_dir, file_name)
-    download_cb = create_download_progress(client, chat_id, progress_msg) if progress_msg else None
+    download_cb = create_download_progress(client, chat_id, progress_msg)
     logger.info("Starting video download...")
     await video_msg.download(file_name=input_file_path, progress=download_cb)
     logger.info("Video download completed.")
+    await progress_msg.edit_text("Download complete. Watermarking started.")
     
-    if progress_msg:
-        try:
-            await progress_msg.edit_text("Download complete. Watermarking started.")
-        except FloodWait:
-            progress_msg = None
-
-    # Get video duration (in seconds) for progress calculation
-    duration_sec = await get_video_duration(input_file_path)
-    if duration_sec <= 0:
-        duration_sec = 1  # safeguard
-
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
-    # Set font_path based on the mode. For /watermarktm, use your custom font file "cour.ttf".
+    # Set font_path based on mode. For watermarktm (and thus /techmon) use your custom font.
     if state['mode'] == 'watermarktm':
-        font_path = "cour.ttf"  # Ensure "cour.ttf" is available in your working directory or specify full path.
+        font_path = "cour.ttf"  # Ensure "cour.ttf" is available in your working directory or specify its full path.
     else:
-        font_path = "/usr/share/fonts/truetype/consola.ttf"  # adjust if needed
+        font_path = "/usr/share/fonts/truetype/consola.ttf"
 
     if state['mode'] in ['watermark', 'harrypotter']:
         filter_str = (
@@ -380,33 +379,13 @@ async def process_watermark(client, message, state, chat_id):
         stderr=asyncio.subprocess.STDOUT
     )
     
-    # Update progress every 5% increment (or at 100%) using the same progress_msg if available.
-    last_logged = 0
     while True:
         line = await proc.stdout.readline()
         if not line:
             break
         decoded_line = line.decode('utf-8').strip()
         logger.info(decoded_line)
-        if decoded_line.startswith("out_time_ms="):
-            try:
-                # Divide the value by 1,000,000 to convert to seconds.
-                out_time_val = int(decoded_line.split("=")[1])
-                current_sec = out_time_val / 1000000.0
-                current_percent = (current_sec / duration_sec) * 100
-                if current_percent > 100:
-                    current_percent = 100
-                if current_percent - last_logged >= 5 or current_percent == 100:
-                    last_logged = current_percent
-                    if progress_msg:
-                        try:
-                            await progress_msg.edit_text(f"Watermark processing: {current_percent:.0f}% completed")
-                        except FloodWait:
-                            progress_msg = None
-            except Exception as e:
-                logger.error("Error parsing ffmpeg progress: " + str(e))
-        if decoded_line == "progress=end":
-            break
+        # (Optional: update progress here if needed)
     await proc.wait()
     
     if proc.returncode != 0:
@@ -417,12 +396,8 @@ async def process_watermark(client, message, state, chat_id):
             del user_state[chat_id]
         return
     
-    # For uploading, send a new message; if FloodWait occurs, skip progress updates.
-    try:
-        upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
-    except FloodWait:
-        upload_msg = None
-    upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
+    await progress_msg.edit_text("Watermarking complete. Uploading: 0%")
+    upload_cb = create_upload_progress(client, chat_id, progress_msg)
     try:
         logger.info("Uploading watermarked video...")
         await client.send_video(
@@ -432,11 +407,7 @@ async def process_watermark(client, message, state, chat_id):
             progress=upload_cb
         )
         logger.info("Upload completed successfully.")
-        if upload_msg:
-            try:
-                await upload_msg.edit_text("Upload complete.")
-            except FloodWait:
-                pass
+        await progress_msg.edit_text("Upload complete.")
     except Exception as e:
         logger.error(f"Error sending video for chat {chat_id}: {e}")
         await message.reply_text("Failed to send watermarked video.")
@@ -697,5 +668,6 @@ async def process_imgwatermark(client, message, state, chat_id):
     shutil.rmtree(temp_dir)
     if chat_id in user_state:
         del user_state[chat_id]
+
 if __name__ == "__main__":
     app.run()
