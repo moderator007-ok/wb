@@ -697,5 +697,5 @@ async def process_imgwatermark(client, message, state, chat_id):
     shutil.rmtree(temp_dir)
     if chat_id in user_state:
         del user_state[chat_id]
-
-app.run()
+if __name__ == "__main__":
+    app.run()
