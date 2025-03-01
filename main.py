@@ -115,7 +115,7 @@ async def techmon_cmd(client, message: Message):
     """
     Preset command for TECHMON.
     Sets the watermark text to @TechMonUPSC_2, font color to black, and font size to 36.
-    This uses the same mode as watermarktm.
+    This uses the watermarktm mode.
     """
     chat_id = message.chat.id
     user_state[chat_id] = {
@@ -177,12 +177,24 @@ async def video_handler(client, message: Message):
         return
     state = user_state[chat_id]
     mode = state.get('mode')
+    # For watermark and watermarktm modes:
     if mode in ['watermark', 'watermarktm']:
-        if state.get('step') != 'await_video':
-            return
-        state['video_message'] = message
-        state['step'] = 'await_text'
-        await message.reply_text("Video captured. Now send the watermark text.")
+        # Check if watermark text is already preset.
+        if state.get('watermark_text'):
+            state['video_message'] = message
+            state['step'] = 'processing'
+            await message.reply_text("Video captured. Using preset watermark. Processing started.")
+            processing_active = True
+            try:
+                await process_watermark(client, message, state, chat_id)
+            finally:
+                processing_active = False
+        else:
+            if state.get('step') != 'await_video':
+                return
+            state['video_message'] = message
+            state['step'] = 'await_text'
+            await message.reply_text("Video captured. Now send the watermark text.")
     elif mode == 'harrypotter':
         if processing_active:
             await message.reply_text("A process is already running; please try later.")
@@ -337,9 +349,9 @@ async def process_watermark(client, message, state, chat_id):
     await progress_msg.edit_text("Download complete. Watermarking started.")
     
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
-    # Set font_path based on mode. For watermarktm (and thus /techmon) use your custom font.
+    # Set font_path based on mode. For watermarktm (and /techmon) use your custom font.
     if state['mode'] == 'watermarktm':
-        font_path = "cour.ttf"  # Ensure "cour.ttf" is available in your working directory or specify its full path.
+        font_path = "cour.ttf"  # Ensure "cour.ttf" is available or specify its full path.
     else:
         font_path = "/usr/share/fonts/truetype/consola.ttf"
 
@@ -385,7 +397,6 @@ async def process_watermark(client, message, state, chat_id):
             break
         decoded_line = line.decode('utf-8').strip()
         logger.info(decoded_line)
-        # (Optional: update progress here if needed)
     await proc.wait()
     
     if proc.returncode != 0:
