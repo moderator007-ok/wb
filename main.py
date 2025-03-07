@@ -467,7 +467,8 @@ async def process_watermark(client, message, state, chat_id):
         "-i", input_file_path,
         "-vf", filter_str,
         "-c:v", "libx264", "-crf", "23", "-preset", "medium",
-        "-movflags", "+faststart",  # Fix white cover/missing duration.
+        "-movflags", "+faststart",       # Ensures metadata is at the beginning.
+        "-pix_fmt", "yuv420p",             # Force compatible pixel format.
         "-c:a", "copy",
         "-progress", "pipe:1",
         output_file
@@ -597,7 +598,8 @@ async def process_bulk_watermark(client, message, state, chat_id):
             "-i", input_file_path,
             "-vf", filter_str,
             "-c:v", "libx264", "-crf", "23", "-preset", "medium",
-            "-movflags", "+faststart",  # Fix white cover/missing duration.
+            "-movflags", "+faststart",       # Ensures metadata is at the beginning.
+            "-pix_fmt", "yuv420p",             # Force compatible pixel format.
             "-c:a", "copy",
             "-progress", "pipe:1",
             output_file
