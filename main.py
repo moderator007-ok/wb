@@ -39,6 +39,35 @@ async def check_authorization(message: Message) -> bool:
         return False
     return True
 
+# ─── Helper: Split Video File by Size (using computed segment duration) ─────────────
+async def split_video_file(input_file: str, output_dir: str, segment_time: int) -> list:
+    """
+    Splits input_file into segments based on segment_time (in seconds) using ffmpeg's segment muxer.
+    Returns a sorted list of output file paths.
+    """
+    output_pattern = os.path.join(output_dir, "part_%03d.mp4")
+    split_cmd = [
+        FFMPEG_PATH,
+        "-i", input_file,
+        "-c", "copy",
+        "-map", "0",
+        "-segment_time", str(segment_time),
+        "-f", "segment",
+        "-reset_timestamps", "1",
+        output_pattern
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *split_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.error(f"Error splitting video: {stderr.decode('utf-8')}")
+        return []
+    parts = sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.startswith("part_") and f.endswith(".mp4")])
+    return parts
+
 # ─── Progress Callback Factories (Download/Upload) ─────────────
 def create_download_progress(client, chat_id, progress_msg: Message):
     last_update = 0
@@ -106,6 +135,7 @@ async def watermark_cmd(client, message: Message):
         'watermark_text': None,
         'font_size': None,
         'font_color': None,
+        'preset': None,
         'step': 'await_video'
     }
     await message.reply_text("Send video.")
@@ -122,6 +152,7 @@ async def watermarktm_cmd(client, message: Message):
         'watermark_text': None,
         'font_size': None,
         'font_color': None,
+        'preset': None,
         'step': 'await_video'
     }
     await message.reply_text("Send video.")
@@ -138,6 +169,7 @@ async def harrypotter_cmd(client, message: Message):
         'watermark_text': "@VictoryAnthem",
         'font_size': 32,
         'font_color': "black",
+        'preset': "medium",
         'step': 'await_video'
     }
     await message.reply_text("Harry Potter preset activated. Send video.")
@@ -250,6 +282,15 @@ async def bulk_text_handler(client, message: Message):
             state['font_color'] = "red"
         else:
             state['font_color'] = "white"
+        state['step'] = 'await_preset'
+        await message.reply_text("Color received. Now send ffmpeg preset (choose: medium, fast, superfast, ultrafast).")
+        return
+    elif state.get('step') == 'await_preset':
+        preset = message.text.strip().lower()
+        if preset not in {"medium", "fast", "superfast", "ultrafast"}:
+            await message.reply_text("Invalid preset. Please send one of: medium, fast, superfast, ultrafast.")
+            return
+        state['preset'] = preset
         state['step'] = 'processing'
         await message.reply_text("All inputs collected. Bulk watermarking started.")
         await process_bulk_watermark(client, message, state, chat_id)
@@ -354,6 +395,14 @@ async def text_handler(client, message: Message):
                 state['font_color'] = "red"
             else:
                 state['font_color'] = "white"
+            state['step'] = 'await_preset'
+            await message.reply_text("Color received. Now send ffmpeg preset (choose: medium, fast, superfast, ultrafast).")
+        elif current_step == 'await_preset':
+            preset = message.text.strip().lower()
+            if preset not in {"medium", "fast", "superfast", "ultrafast"}:
+                await message.reply_text("Invalid preset. Please send one of: medium, fast, superfast, ultrafast.")
+                return
+            state['preset'] = preset
             state['step'] = 'processing'
             if processing_active:
                 await message.reply_text("A process is already running; please try later.")
@@ -409,7 +458,7 @@ async def get_video_duration(file_path):
             logger.error("Error getting stream duration: " + str(e))
     return duration
 
-# ─── Existing Processing Function for Single Watermark ─────────────
+# ─── Processing Function for Single Watermark ─────────────
 async def process_watermark(client, message, state, chat_id):
     try:
         progress_msg = await client.send_message(chat_id, "Downloading: 0%")
@@ -439,7 +488,7 @@ async def process_watermark(client, message, state, chat_id):
         duration_sec = 1  # safeguard
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
     if state['mode'] == 'watermarktm':
-        font_path = "cour.ttf"  # Ensure this file exists or adjust the path.
+        font_path = "cour.ttf"  # Adjust path if necessary.
     else:
         font_path = "/usr/share/fonts/truetype/consola.ttf"  # Adjust if needed.
     if state['mode'] in ['watermark', 'harrypotter']:
@@ -466,9 +515,9 @@ async def process_watermark(client, message, state, chat_id):
         "-fflags", "+genpts",
         "-i", input_file_path,
         "-vf", filter_str,
-        "-c:v", "libx264", "-crf", "23", "-preset", "medium",
-        "-movflags", "+faststart",       # Ensures metadata is at the beginning.
-        "-pix_fmt", "yuv420p",             # Force compatible pixel format.
+        "-c:v", "libx264", "-crf", "23", "-preset", state.get('preset', 'medium'),
+        "-movflags", "+faststart",
+        "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-progress", "pipe:1",
         output_file
@@ -517,30 +566,44 @@ async def process_watermark(client, message, state, chat_id):
     except FloodWait:
         upload_msg = None
     upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
-    # Preserve original caption if present.
     original_caption = video_msg.caption if video_msg.caption else "Here is your watermarked video."
-    try:
-        logger.info("Uploading watermarked video...")
-        await client.send_video(
-            chat_id,
-            video=output_file,
-            caption=original_caption,
-            progress=upload_cb
-        )
-        logger.info("Upload completed successfully.")
-        if upload_msg:
-            try:
-                await upload_msg.edit_text("Upload complete.")
-            except FloodWait:
-                pass
-    except Exception as e:
-        logger.error(f"Error sending video for chat {chat_id}: {e}")
-        await message.reply_text("Failed to send watermarked video.")
+    # Check file size; if it exceeds 1.9GB, split by size (using computed segment duration)
+    threshold = 1.9 * (1024**3)  # 1.9GB in bytes
+    output_size = os.path.getsize(output_file)
+    if output_size > threshold:
+        video_duration = await get_video_duration(output_file)
+        segment_time = int((threshold / output_size) * video_duration)
+        if segment_time < 1:
+            segment_time = 1
+        segments_dir = os.path.join(temp_dir, "segments")
+        os.makedirs(segments_dir, exist_ok=True)
+        parts = await split_video_file(output_file, segments_dir, segment_time)
+        for part in parts:
+            await client.send_video(chat_id, video=part, caption=original_caption, progress=upload_cb)
+        shutil.rmtree(segments_dir)
+    else:
+        try:
+            logger.info("Uploading watermarked video...")
+            await client.send_video(
+                chat_id,
+                video=output_file,
+                caption=original_caption,
+                progress=upload_cb
+            )
+            logger.info("Upload completed successfully.")
+            if upload_msg:
+                try:
+                    await upload_msg.edit_text("Upload complete.")
+                except FloodWait:
+                    pass
+        except Exception as e:
+            logger.error(f"Error sending video for chat {chat_id}: {e}")
+            await message.reply_text("Failed to send watermarked video.")
     shutil.rmtree(temp_dir)
     if chat_id in user_state:
         del user_state[chat_id]
 
-# ─── New Bulk Watermark Processing Function ─────────────
+# ─── Processing Function for Bulk Watermark ─────────────
 async def process_bulk_watermark(client, message, state, chat_id):
     videos = state.get('videos', [])
     for video_msg in videos:
@@ -597,9 +660,9 @@ async def process_bulk_watermark(client, message, state, chat_id):
             "-fflags", "+genpts",
             "-i", input_file_path,
             "-vf", filter_str,
-            "-c:v", "libx264", "-crf", "23", "-preset", "medium",
-            "-movflags", "+faststart",       # Ensures metadata is at the beginning.
-            "-pix_fmt", "yuv420p",             # Force compatible pixel format.
+            "-c:v", "libx264", "-crf", "23", "-preset", state.get('preset', 'medium'),
+            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
             "-c:a", "copy",
             "-progress", "pipe:1",
             output_file
@@ -646,25 +709,38 @@ async def process_bulk_watermark(client, message, state, chat_id):
         except FloodWait:
             upload_msg = None
         upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
-        # Preserve original caption from the original video message.
         original_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
-        try:
-            logger.info("Uploading watermarked video for bulk video...")
-            await client.send_video(
-                chat_id,
-                video=output_file,
-                caption=original_caption,
-                progress=upload_cb
-            )
-            logger.info("Upload completed successfully for bulk video.")
-            if upload_msg:
-                try:
-                    await upload_msg.edit_text("Upload complete.")
-                except FloodWait:
-                    pass
-        except Exception as e:
-            logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
-            await client.send_message(chat_id, "Failed to send watermarked video.")
+        output_size = os.path.getsize(output_file)
+        threshold = 1.9 * (1024**3)
+        if output_size > threshold:
+            video_duration = await get_video_duration(output_file)
+            segment_time = int((threshold / output_size) * video_duration)
+            if segment_time < 1:
+                segment_time = 1
+            segments_dir = os.path.join(temp_dir, "segments")
+            os.makedirs(segments_dir, exist_ok=True)
+            parts = await split_video_file(output_file, segments_dir, segment_time)
+            for part in parts:
+                await client.send_video(chat_id, video=part, caption=original_caption, progress=upload_cb)
+            shutil.rmtree(segments_dir)
+        else:
+            try:
+                logger.info("Uploading watermarked video for bulk video...")
+                await client.send_video(
+                    chat_id,
+                    video=output_file,
+                    caption=original_caption,
+                    progress=upload_cb
+                )
+                logger.info("Upload completed successfully for bulk video.")
+                if upload_msg:
+                    try:
+                        await upload_msg.edit_text("Upload complete.")
+                    except FloodWait:
+                        pass
+            except Exception as e:
+                logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
+                await client.send_message(chat_id, "Failed to send watermarked video.")
         shutil.rmtree(temp_dir)
     if chat_id in bulk_state:
         del bulk_state[chat_id]
