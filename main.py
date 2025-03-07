@@ -11,7 +11,7 @@ from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 
-# Allowed admin IDs for /stop and /restart commands.
+# Allowed admin IDs for all commands.
 ALLOWED_ADMINS = [640815756, 5317760109]
 
 # Global flag: only one processing task runs at a time.
@@ -19,7 +19,7 @@ processing_active = False
 
 # Global dictionaries for user state (single processing) and bulk state.
 user_state = {}
-bulk_state = {}  # New global state for bulk watermark processing
+bulk_state = {}  # Global state for bulk watermark processing
 
 # ─── Logging Configuration ─────────────────────────────────────
 logging.basicConfig(
@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 # ─── Initialize the Pyrogram Client ───────────────────────────
 app = Client("watermark_robot_2", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# ─── Helper: Check Authorization ───────────────────────────────
+async def check_authorization(message: Message) -> bool:
+    if message.chat.id not in ALLOWED_ADMINS:
+        await message.reply_text("You are not authorized.")
+        return False
+    return True
 
 # ─── Progress Callback Factories (Download/Upload) ─────────────
 def create_download_progress(client, chat_id, progress_msg: Message):
@@ -70,8 +77,7 @@ def create_upload_progress(client, chat_id, progress_msg: Message):
 # ─── Admin Commands: /stop and /restart ─────────────────────────
 @app.on_message(filters.command("stop") & filters.private)
 async def stop_cmd(client, message: Message):
-    if message.chat.id not in ALLOWED_ADMINS:
-        await message.reply_text("Unauthorized.")
+    if not await check_authorization(message):
         return
     global processing_active
     if processing_active:
@@ -82,8 +88,7 @@ async def stop_cmd(client, message: Message):
 
 @app.on_message(filters.command("restart") & filters.private)
 async def restart_cmd(client, message: Message):
-    if message.chat.id not in ALLOWED_ADMINS:
-        await message.reply_text("Unauthorized.")
+    if not await check_authorization(message):
         return
     await message.reply_text("Bot is restarting...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -91,6 +96,8 @@ async def restart_cmd(client, message: Message):
 # ─── Command Handlers for Single-Video Watermark Modes ─────────
 @app.on_message(filters.command("watermark") & filters.private)
 async def watermark_cmd(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
     user_state[chat_id] = {
         'mode': 'watermark',
@@ -105,6 +112,8 @@ async def watermark_cmd(client, message: Message):
 
 @app.on_message(filters.command("watermarktm") & filters.private)
 async def watermarktm_cmd(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
     user_state[chat_id] = {
         'mode': 'watermarktm',
@@ -119,6 +128,8 @@ async def watermarktm_cmd(client, message: Message):
 
 @app.on_message(filters.command("harrypotter") & filters.private)
 async def harrypotter_cmd(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
     user_state[chat_id] = {
         'mode': 'harrypotter',
@@ -133,6 +144,8 @@ async def harrypotter_cmd(client, message: Message):
 
 @app.on_message(filters.command("overlay") & filters.private)
 async def overlay_cmd(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
     user_state[chat_id] = {
         'mode': 'overlay',
@@ -146,6 +159,8 @@ async def overlay_cmd(client, message: Message):
 
 @app.on_message(filters.command("imgwatermark") & filters.private)
 async def imgwatermark_cmd(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
     user_state[chat_id] = {
         'mode': 'imgwatermark',
@@ -159,8 +174,9 @@ async def imgwatermark_cmd(client, message: Message):
 # ─── New Bulk Watermarking Commands ─────────────────────────────
 @app.on_message(filters.command("inputwatermark") & filters.private)
 async def inputwatermark_bulk(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
-    # Initialize bulk state with an empty list of videos.
     bulk_state[chat_id] = {'videos': []}
     await message.reply_text(
         "Bulk watermark mode activated.\n"
@@ -169,6 +185,8 @@ async def inputwatermark_bulk(client, message: Message):
 
 @app.on_message(filters.command("watermarkask") & filters.private)
 async def bulk_watermarkask_cmd(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
     if chat_id not in bulk_state or not bulk_state[chat_id].get('videos'):
         await message.reply_text("No videos collected. Use /inputwatermark first and send your videos.")
@@ -179,6 +197,8 @@ async def bulk_watermarkask_cmd(client, message: Message):
 
 @app.on_message(filters.command("watermarktmask") & filters.private)
 async def bulk_watermarktmask_cmd(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
     if chat_id not in bulk_state or not bulk_state[chat_id].get('videos'):
         await message.reply_text("No videos collected. Use /inputwatermark first and send your videos.")
@@ -188,18 +208,20 @@ async def bulk_watermarktmask_cmd(client, message: Message):
     await message.reply_text("Send watermark text for bulk text watermarking.")
 
 # ─── New Bulk Video Handler ─────────────────────────────
-# This handler collects videos sent while in bulk mode.
 @app.on_message(filters.private & (filters.video | filters.document))
 async def bulk_video_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
     if chat_id in bulk_state:
         bulk_state[chat_id].setdefault('videos', []).append(message)
         await message.reply_text("Video added for bulk watermarking.")
 
 # ─── New Bulk Text Handler ─────────────────────────────
-# This handler manages the conversation for bulk watermarking inputs.
 @app.on_message(filters.text & filters.private)
 async def bulk_text_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
     chat_id = message.chat.id
     if chat_id not in bulk_state:
         return  # Not in bulk mode; let the other text handler process it.
@@ -236,6 +258,8 @@ async def bulk_text_handler(client, message: Message):
 # ─── Existing Video Handler for Single Processing ─────────────
 @app.on_message(filters.private & (filters.video | filters.document))
 async def video_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
     global processing_active
     chat_id = message.chat.id
     if chat_id not in user_state:
@@ -275,6 +299,8 @@ async def video_handler(client, message: Message):
 # ─── Existing Image Handler for /imgwatermark ─────────────
 @app.on_message(filters.private & (filters.photo | filters.document))
 async def image_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
     global processing_active
     chat_id = message.chat.id
     if chat_id not in user_state:
@@ -296,6 +322,8 @@ async def image_handler(client, message: Message):
 # ─── Existing Text Handler for Single Processing ─────────────
 @app.on_message(filters.text & filters.private)
 async def text_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
     global processing_active
     chat_id = message.chat.id
     if chat_id not in user_state:
@@ -363,7 +391,6 @@ async def get_video_duration(file_path):
     except Exception as e:
         logger.error("Error getting format duration: " + str(e))
         duration = 0.0
-    # If duration appears too low, try getting the video stream's duration
     if duration < 60:
         proc2 = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error",
@@ -440,6 +467,7 @@ async def process_watermark(client, message, state, chat_id):
         "-i", input_file_path,
         "-vf", filter_str,
         "-c:v", "libx264", "-crf", "23", "-preset", "medium",
+        "-movflags", "+faststart",  # Fix white cover/missing duration.
         "-c:a", "copy",
         "-progress", "pipe:1",
         output_file
@@ -488,12 +516,14 @@ async def process_watermark(client, message, state, chat_id):
     except FloodWait:
         upload_msg = None
     upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
+    # Preserve original caption if present.
+    original_caption = video_msg.caption if video_msg.caption else "Here is your watermarked video."
     try:
         logger.info("Uploading watermarked video...")
         await client.send_video(
             chat_id,
             video=output_file,
-            caption="Here is your watermarked video.",
+            caption=original_caption,
             progress=upload_cb
         )
         logger.info("Upload completed successfully.")
@@ -567,6 +597,7 @@ async def process_bulk_watermark(client, message, state, chat_id):
             "-i", input_file_path,
             "-vf", filter_str,
             "-c:v", "libx264", "-crf", "23", "-preset", "medium",
+            "-movflags", "+faststart",  # Fix white cover/missing duration.
             "-c:a", "copy",
             "-progress", "pipe:1",
             output_file
@@ -613,12 +644,14 @@ async def process_bulk_watermark(client, message, state, chat_id):
         except FloodWait:
             upload_msg = None
         upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
+        # Preserve original caption from the original video message.
+        original_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
         try:
             logger.info("Uploading watermarked video for bulk video...")
             await client.send_video(
                 chat_id,
                 video=output_file,
-                caption="Here is your bulk watermarked video.",
+                caption=original_caption,
                 progress=upload_cb
             )
             logger.info("Upload completed successfully for bulk video.")
@@ -631,11 +664,10 @@ async def process_bulk_watermark(client, message, state, chat_id):
             logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
             await client.send_message(chat_id, "Failed to send watermarked video.")
         shutil.rmtree(temp_dir)
-    # Clear bulk state after processing all videos.
     if chat_id in bulk_state:
         del bulk_state[chat_id]
 
-# ─── Existing Processing Functions for Overlay and Image Watermark ─────────
+# ─── Existing Processing Functions for Overlay and Image Watermark (Unchanged) ─────────
 async def process_overlay(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
@@ -692,12 +724,9 @@ async def process_overlay(client, message, state, chat_id):
         shutil.rmtree(temp_dir)
         return
     # (Overlay processing logic continues here …)
-    # Ensure to remove the temporary directory and clear state as needed.
     shutil.rmtree(temp_dir)
 
 async def process_imgwatermark(client, message, state, chat_id):
-    # (Your existing image watermark processing logic here)
-    # This function should download the video and image, apply the watermark via ffmpeg, and then upload.
     await client.send_message(chat_id, "Image watermark processing is not modified in bulk mode.")
 
 # ─── Start the Pyrogram Client ─────────────────────────────
