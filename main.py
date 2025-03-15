@@ -13,7 +13,7 @@ from pyrogram.errors import FloodWait
 from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 from moviepy.editor import VideoFileClip  # Importing MoviePy
 
-# ─── Added Functions: Thumbnail Generation and Video Details using MoviePy ───
+# ─── Updated Function: Thumbnail Generation using FFmpeg ───
 def generate_thumbnail(video_file, thumbnail_path, time_offset="00:00:01.000"):
     """
     Generate a thumbnail image from a video file using FFmpeg.
@@ -21,36 +21,41 @@ def generate_thumbnail(video_file, thumbnail_path, time_offset="00:00:01.000"):
     Args:
         video_file (str): Path to the source video file.
         thumbnail_path (str): Path where the thumbnail image will be saved.
-        time_offset (str): Timestamp offset (HH:MM:SS.mmm) to capture the thumbnail. Default is 1 second.
+        time_offset (str): Timestamp offset (HH:MM:SS.mmm) to capture the thumbnail.
 
     Returns:
         str or None: Returns the thumbnail path if successful, otherwise None.
     """
     ffmpeg_executable = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+    # Move -ss before -i to improve seeking speed and accuracy
     command = [
         ffmpeg_executable,
-        "-i", video_file,
         "-ss", time_offset,
-        "-vframes", "1",
-        thumbnail_path,
-        "-y"  # Overwrite output file if it exists.
+        "-i", video_file,
+        "-frames:v", "1",
+        "-y",  # Overwrite output file if it exists.
+        thumbnail_path
     ]
     try:
-        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        logging.info("Thumbnail generated successfully.")
         return thumbnail_path
     except subprocess.CalledProcessError as e:
-        logging.error(f"Thumbnail generation failed: {e}")
+        logging.error(f"Thumbnail generation failed: {e.stderr.decode('utf-8')}")
         return None
 
+# ─── Updated Function: Retrieve Video Details with MoviePy and ffprobe Fallback ───
 def get_video_details(video_file):
     """
-    Retrieve video details such as width, height, and duration using MoviePy.
+    Retrieve video details such as width, height, and duration.
+    It first attempts to use MoviePy, and if that fails, falls back to ffprobe.
 
     Args:
         video_file (str): Path to the source video file.
 
     Returns:
-        dict: A dictionary with keys 'width', 'height', and 'duration'. Returns an empty dict on error.
+        dict: A dictionary with keys 'width', 'height', and 'duration'.
+              Returns an empty dict on error.
     """
     try:
         clip = VideoFileClip(video_file)
@@ -65,7 +70,31 @@ def get_video_details(video_file):
             clip.audio.reader.close_proc()
         return details
     except Exception as e:
-        logging.error(f"Failed to retrieve video details: {e}")
+        logging.error(f"MoviePy failed to retrieve details: {e}. Falling back to ffprobe.")
+        try:
+            # Use ffprobe (assumes ffprobe is in the same location as ffmpeg if FFMPEG_PATH is set)
+            ffprobe_executable = FFMPEG_PATH.replace("ffmpeg", "ffprobe") if FFMPEG_PATH else "ffprobe"
+            ffprobe_cmd = [
+                ffprobe_executable,
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_file
+            ]
+            result = subprocess.run(ffprobe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            output = result.stdout.decode('utf-8').strip().splitlines()
+            if len(output) >= 3:
+                details = {
+                    "width": int(output[0]),
+                    "height": int(output[1]),
+                    "duration": float(output[2])
+                }
+                return details
+            else:
+                logging.error("ffprobe did not return enough data.")
+        except Exception as ex:
+            logging.error(f"ffprobe failed to retrieve details: {ex}")
         return {}
 
 # ─── Allowed admin IDs for all commands. ───
@@ -866,4 +895,13 @@ async def process_imgwatermark(client, message, state, chat_id):
 
 # ─── Start the Pyrogram Client ─────────────────────────────
 if __name__ == '__main__':
+    # Optional: Test thumbnail and metadata functions before starting the bot.
+    test_video = "path/to/your/test_video.mp4"
+    thumbnail = "path/to/output_thumbnail.jpg"
+    thumb = generate_thumbnail(test_video, thumbnail)
+    if thumb:
+        logging.info(f"Thumbnail generated at: {thumb}")
+    metadata = get_video_details(test_video)
+    if metadata:
+        logging.info(f"Video metadata: {metadata}")
     app.run()
