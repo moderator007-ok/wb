@@ -477,7 +477,43 @@ async def text_handler(client, message: Message):
 
 # ─── Helper Function: Get Video Duration Using ffprobe ─────────────
 async def get_video_duration(file_path):
-    \"\"\"\n    Returns the video duration in seconds using ffprobe.\n    First, it attempts to get the container duration. If that duration\n    is suspiciously low (e.g. less than 60 seconds) then it tries to get the \n    video stream's duration and returns the maximum of both.\n    \"\"\"\n    proc = await asyncio.create_subprocess_exec(\n        \"ffprobe\", \"-v\", \"error\",\n        \"-show_entries\", \"format=duration\",\n        \"-of\", \"default=noprint_wrappers=1:nokey=1\",\n        file_path,\n        stdout=asyncio.subprocess.PIPE,\n        stderr=asyncio.subprocess.PIPE\n    )\n    stdout, _ = await proc.communicate()\n    try:\n        duration = float(stdout.decode().strip())\n    except Exception as e:\n        logger.error(\"Error getting format duration: \" + str(e))\n        duration = 0.0\n    if duration < 60:\n        proc2 = await asyncio.create_subprocess_exec(\n            \"ffprobe\", \"-v\", \"error\",\n            \"-select_streams\", \"v:0\",\n            \"-show_entries\", \"stream=duration\",\n            \"-of\", \"default=noprint_wrappers=1:nokey=1\",\n            file_path,\n            stdout=asyncio.subprocess.PIPE,\n            stderr=asyncio.subprocess.PIPE\n        )\n        stdout2, _ = await proc2.communicate()\n        try:\n            stream_duration = float(stdout2.decode().strip())\n            duration = max(duration, stream_duration)\n        except Exception as e:\n            logger.error(\"Error getting stream duration: \" + str(e))\n    return duration
+    """
+    Returns the video duration in seconds using ffprobe.
+    First, it attempts to get the container duration. If that duration
+    is suspiciously low (e.g. less than 60 seconds) then it tries to get the 
+    video stream's duration and returns the maximum of both.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    try:
+        duration = float(stdout.decode().strip())
+    except Exception as e:
+        logger.error("Error getting format duration: " + str(e))
+        duration = 0.0
+    if duration < 60:
+        proc2 = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout2, _ = await proc2.communicate()
+        try:
+            stream_duration = float(stdout2.decode().strip())
+            duration = max(duration, stream_duration)
+        except Exception as e:
+            logger.error("Error getting stream duration: " + str(e))
+    return duration
 
 # ─── Processing Function for Single Watermark ─────────────
 async def process_watermark(client, message, state, chat_id):
@@ -515,17 +551,17 @@ async def process_watermark(client, message, state, chat_id):
     if state['mode'] in ['watermark', 'harrypotter']:
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
-            f"fontcolor={state['font_color']}:"
-            f"fontsize={state['font_size']}:"
-            f"x=(w-text_w)/2:"
+            f"fontcolor={state['font_color']}:" 
+            f"fontsize={state['font_size']}:" 
+            f"x=(w-text_w)/2:" 
             f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
         )
     elif state['mode'] == 'watermarktm':
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
-            f"fontfile={font_path}:"
-            f"fontcolor={state['font_color']}:"
-            f"fontsize={state['font_size']}:"
+            f"fontfile={font_path}:" 
+            f"fontcolor={state['font_color']}:" 
+            f"fontsize={state['font_size']}:" 
             f"font='Courier New':"
             f"x='mod(t\\,30)*30':"
             f"y='mod(t\\,30)*15'"
@@ -660,17 +696,17 @@ async def process_bulk_watermark(client, message, state, chat_id):
         if state['mode'] == 'watermark':
             filter_str = (
                 f"drawtext=text='{state['watermark_text']}':"
-                f"fontcolor={state['font_color']}:"
-                f"fontsize={state['font_size']}:"
-                f"x=(w-text_w)/2:"
+                f"fontcolor={state['font_color']}:" 
+                f"fontsize={state['font_size']}:" 
+                f"x=(w-text_w)/2:" 
                 f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
             )
         elif state['mode'] == 'watermarktm':
             filter_str = (
                 f"drawtext=text='{state['watermark_text']}':"
-                f"fontfile={font_path}:"
-                f"fontcolor={state['font_color']}:"
-                f"fontsize={state['font_size']}:"
+                f"fontfile={font_path}:" 
+                f"fontcolor={state['font_color']}:" 
+                f"fontsize={state['font_size']}:" 
                 f"font='Courier New':"
                 f"x='mod(t\\,30)*30':"
                 f"y='mod(t\\,30)*15'"
