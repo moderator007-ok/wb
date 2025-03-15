@@ -27,13 +27,13 @@ def generate_thumbnail(video_file, thumbnail_path, time_offset="00:00:01.000"):
         str or None: Returns the thumbnail path if successful, otherwise None.
     """
     ffmpeg_executable = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
-    # Move -ss before -i to improve seeking speed and accuracy
+    # Move -ss before -i for faster seeking
     command = [
         ffmpeg_executable,
         "-ss", time_offset,
         "-i", video_file,
         "-frames:v", "1",
-        "-y",  # Overwrite output file if it exists.
+        "-y",  # Overwrite if exists
         thumbnail_path
     ]
     try:
@@ -64,7 +64,6 @@ def get_video_details(video_file):
             "height": clip.h,
             "duration": clip.duration
         }
-        # Properly close the clip to free resources.
         clip.reader.close()
         if clip.audio:
             clip.audio.reader.close_proc()
@@ -72,7 +71,6 @@ def get_video_details(video_file):
     except Exception as e:
         logging.error(f"MoviePy failed to retrieve details: {e}. Falling back to ffprobe.")
         try:
-            # Use ffprobe (assumes ffprobe is in the same location as ffmpeg if FFMPEG_PATH is set)
             ffprobe_executable = FFMPEG_PATH.replace("ffmpeg", "ffprobe") if FFMPEG_PATH else "ffprobe"
             ffprobe_cmd = [
                 ffprobe_executable,
@@ -647,6 +645,17 @@ async def process_watermark(client, message, state, chat_id):
         if chat_id in user_state:
             del user_state[chat_id]
         return
+
+    # Retrieve metadata from watermarked video
+    metadata = get_video_details(output_file)
+    width = metadata.get("width")
+    height = metadata.get("height")
+    duration_value = int(metadata.get("duration", 0))
+
+    # Generate a thumbnail from the watermarked video
+    thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
+    thumb = generate_thumbnail(output_file, thumb_path)
+
     try:
         upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
     except FloodWait:
@@ -665,7 +674,16 @@ async def process_watermark(client, message, state, chat_id):
         os.makedirs(segments_dir, exist_ok=True)
         parts = await split_video_file(output_file, segments_dir, segment_time)
         for part in parts:
-            await client.send_video(chat_id, video=part, caption=original_caption, progress=upload_cb)
+            await client.send_video(
+                chat_id,
+                video=part,
+                thumb=thumb, 
+                caption=original_caption,
+                progress=upload_cb,
+                width=width,
+                height=height,
+                duration=duration_value
+            )
         shutil.rmtree(segments_dir)
     else:
         try:
@@ -673,8 +691,12 @@ async def process_watermark(client, message, state, chat_id):
             await client.send_video(
                 chat_id,
                 video=output_file,
+                thumb=thumb,
                 caption=original_caption,
-                progress=upload_cb
+                progress=upload_cb,
+                width=width,
+                height=height,
+                duration=duration_value
             )
             logger.info("Upload completed successfully.")
             if upload_msg:
@@ -796,6 +818,7 @@ async def process_bulk_watermark(client, message, state, chat_id):
             upload_msg = None
         upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
         original_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
+        # For bulk, we don't generate a thumbnail or metadata. (Implement similarly if needed.)
         output_size = os.path.getsize(output_file)
         threshold = 1.9 * (1024**3)
         if output_size > threshold:
@@ -831,7 +854,7 @@ async def process_bulk_watermark(client, message, state, chat_id):
     if chat_id in bulk_state:
         del bulk_state[chat_id]
 
-# ─── Existing Processing Functions for Overlay and Image Watermark (Unchanged) ─────────
+# ─── Processing Functions for Overlay and Image Watermark (Unchanged) ─────────
 async def process_overlay(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
