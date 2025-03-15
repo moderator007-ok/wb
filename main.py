@@ -6,18 +6,75 @@ import subprocess
 import logging
 import tempfile
 import shutil
+
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
+from moviepy.editor import VideoFileClip  # Importing MoviePy
 
-# Allowed admin IDs for all commands.
+# ─── Added Functions: Thumbnail Generation and Video Details using MoviePy ───
+def generate_thumbnail(video_file, thumbnail_path, time_offset="00:00:01.000"):
+    """
+    Generate a thumbnail image from a video file using FFmpeg.
+
+    Args:
+        video_file (str): Path to the source video file.
+        thumbnail_path (str): Path where the thumbnail image will be saved.
+        time_offset (str): Timestamp offset (HH:MM:SS.mmm) to capture the thumbnail. Default is 1 second.
+
+    Returns:
+        str or None: Returns the thumbnail path if successful, otherwise None.
+    """
+    ffmpeg_executable = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+    command = [
+        ffmpeg_executable,
+        "-i", video_file,
+        "-ss", time_offset,
+        "-vframes", "1",
+        thumbnail_path,
+        "-y"  # Overwrite output file if it exists.
+    ]
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return thumbnail_path
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Thumbnail generation failed: {e}")
+        return None
+
+def get_video_details(video_file):
+    """
+    Retrieve video details such as width, height, and duration using MoviePy.
+
+    Args:
+        video_file (str): Path to the source video file.
+
+    Returns:
+        dict: A dictionary with keys 'width', 'height', and 'duration'. Returns an empty dict on error.
+    """
+    try:
+        clip = VideoFileClip(video_file)
+        details = {
+            "width": clip.w,
+            "height": clip.h,
+            "duration": clip.duration
+        }
+        # Properly close the clip to free resources.
+        clip.reader.close()
+        if clip.audio:
+            clip.audio.reader.close_proc()
+        return details
+    except Exception as e:
+        logging.error(f"Failed to retrieve video details: {e}")
+        return {}
+
+# ─── Allowed admin IDs for all commands. ───
 ALLOWED_ADMINS = [640815756, 5317760109]
 
-# Global flag: only one processing task runs at a time.
+# ─── Global flag: only one processing task runs at a time. ───
 processing_active = False
 
-# Global dictionaries for user state (single processing) and bulk state.
+# ─── Global dictionaries for user state (single processing) and bulk state. ───
 user_state = {}
 bulk_state = {}  # Global state for bulk watermark processing
 
@@ -420,43 +477,7 @@ async def text_handler(client, message: Message):
 
 # ─── Helper Function: Get Video Duration Using ffprobe ─────────────
 async def get_video_duration(file_path):
-    """
-    Returns the video duration in seconds using ffprobe.
-    First, it attempts to get the container duration. If that duration
-    is suspiciously low (e.g. less than 60 seconds) then it tries to get the 
-    video stream's duration and returns the maximum of both.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        file_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, _ = await proc.communicate()
-    try:
-        duration = float(stdout.decode().strip())
-    except Exception as e:
-        logger.error("Error getting format duration: " + str(e))
-        duration = 0.0
-    if duration < 60:
-        proc2 = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            file_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout2, _ = await proc2.communicate()
-        try:
-            stream_duration = float(stdout2.decode().strip())
-            duration = max(duration, stream_duration)
-        except Exception as e:
-            logger.error("Error getting stream duration: " + str(e))
-    return duration
+    \"\"\"\n    Returns the video duration in seconds using ffprobe.\n    First, it attempts to get the container duration. If that duration\n    is suspiciously low (e.g. less than 60 seconds) then it tries to get the \n    video stream's duration and returns the maximum of both.\n    \"\"\"\n    proc = await asyncio.create_subprocess_exec(\n        \"ffprobe\", \"-v\", \"error\",\n        \"-show_entries\", \"format=duration\",\n        \"-of\", \"default=noprint_wrappers=1:nokey=1\",\n        file_path,\n        stdout=asyncio.subprocess.PIPE,\n        stderr=asyncio.subprocess.PIPE\n    )\n    stdout, _ = await proc.communicate()\n    try:\n        duration = float(stdout.decode().strip())\n    except Exception as e:\n        logger.error(\"Error getting format duration: \" + str(e))\n        duration = 0.0\n    if duration < 60:\n        proc2 = await asyncio.create_subprocess_exec(\n            \"ffprobe\", \"-v\", \"error\",\n            \"-select_streams\", \"v:0\",\n            \"-show_entries\", \"stream=duration\",\n            \"-of\", \"default=noprint_wrappers=1:nokey=1\",\n            file_path,\n            stdout=asyncio.subprocess.PIPE,\n            stderr=asyncio.subprocess.PIPE\n        )\n        stdout2, _ = await proc2.communicate()\n        try:\n            stream_duration = float(stdout2.decode().strip())\n            duration = max(duration, stream_duration)\n        except Exception as e:\n            logger.error(\"Error getting stream duration: \" + str(e))\n    return duration
 
 # ─── Processing Function for Single Watermark ─────────────
 async def process_watermark(client, message, state, chat_id):
@@ -494,8 +515,8 @@ async def process_watermark(client, message, state, chat_id):
     if state['mode'] in ['watermark', 'harrypotter']:
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
-            f"fontcolor={state['font_color']}:" 
-            f"fontsize={state['font_size']}:" 
+            f"fontcolor={state['font_color']}:"
+            f"fontsize={state['font_size']}:"
             f"x=(w-text_w)/2:"
             f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
         )
@@ -503,8 +524,8 @@ async def process_watermark(client, message, state, chat_id):
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
             f"fontfile={font_path}:"
-            f"fontcolor={state['font_color']}:" 
-            f"fontsize={state['font_size']}:" 
+            f"fontcolor={state['font_color']}:"
+            f"fontsize={state['font_size']}:"
             f"font='Courier New':"
             f"x='mod(t\\,30)*30':"
             f"y='mod(t\\,30)*15'"
@@ -639,8 +660,8 @@ async def process_bulk_watermark(client, message, state, chat_id):
         if state['mode'] == 'watermark':
             filter_str = (
                 f"drawtext=text='{state['watermark_text']}':"
-                f"fontcolor={state['font_color']}:" 
-                f"fontsize={state['font_size']}:" 
+                f"fontcolor={state['font_color']}:"
+                f"fontsize={state['font_size']}:"
                 f"x=(w-text_w)/2:"
                 f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
             )
@@ -648,8 +669,8 @@ async def process_bulk_watermark(client, message, state, chat_id):
             filter_str = (
                 f"drawtext=text='{state['watermark_text']}':"
                 f"fontfile={font_path}:"
-                f"fontcolor={state['font_color']}:" 
-                f"fontsize={state['font_size']}:" 
+                f"fontcolor={state['font_color']}:"
+                f"fontsize={state['font_size']}:"
                 f"font='Courier New':"
                 f"x='mod(t\\,30)*30':"
                 f"y='mod(t\\,30)*15'"
