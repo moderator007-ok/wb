@@ -8,7 +8,7 @@ import tempfile
 import shutil
 
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, DocumentAttributeVideo
 from pyrogram.errors import FloodWait
 from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 from moviepy.editor import VideoFileClip  # Importing MoviePy
@@ -123,7 +123,7 @@ async def check_authorization(message: Message) -> bool:
         return False
     return True
 
-# ─── Helper: Split Video File by Size (using computed segment duration) ─────────────
+# ─── Helper: Split Video File by Size ─────────────
 async def split_video_file(input_file: str, output_dir: str, segment_time: int) -> list:
     """
     Splits input_file into segments based on segment_time (in seconds) using ffmpeg's segment muxer.
@@ -152,7 +152,7 @@ async def split_video_file(input_file: str, output_dir: str, segment_time: int) 
     parts = sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.startswith("part_") and f.endswith(".mp4")])
     return parts
 
-# ─── Progress Callback Factories (Download/Upload) ─────────────
+# ─── Progress Callback Factories ─────────────
 def create_download_progress(client, chat_id, progress_msg: Message):
     last_update = 0
     async def progress(current, total):
@@ -187,7 +187,7 @@ def create_upload_progress(client, chat_id, progress_msg: Message):
                         logger.error("Error updating upload progress: " + str(e))
     return progress
 
-# ─── Admin Commands: /stop and /restart ─────────────────────────
+# ─── Admin Commands ─────────────
 @app.on_message(filters.command("stop") & filters.private)
 async def stop_cmd(client, message: Message):
     if not await check_authorization(message):
@@ -206,7 +206,7 @@ async def restart_cmd(client, message: Message):
     await message.reply_text("Bot is restarting...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
-# ─── Command Handlers for Single-Video Watermark Modes ─────────
+# ─── Command Handlers for Single-Video Watermark Modes ─────────────
 @app.on_message(filters.command("watermark") & filters.private)
 async def watermark_cmd(client, message: Message):
     if not await check_authorization(message):
@@ -287,7 +287,7 @@ async def imgwatermark_cmd(client, message: Message):
     }
     await message.reply_text("Send video for image watermarking.")
 
-# ─── New Bulk Watermarking Commands ─────────────────────────────
+# ─── New Bulk Watermarking Commands ─────────────
 @app.on_message(filters.command("inputwatermark") & filters.private)
 async def inputwatermark_bulk(client, message: Message):
     if not await check_authorization(message):
@@ -295,8 +295,7 @@ async def inputwatermark_bulk(client, message: Message):
     chat_id = message.chat.id
     bulk_state[chat_id] = {'videos': []}
     await message.reply_text(
-        "Bulk watermark mode activated.\n"
-        "Now, send all the videos you want to watermark."
+        "Bulk watermark mode activated.\nNow, send all the videos you want to watermark."
     )
 
 @app.on_message(filters.command("watermarkask") & filters.private)
@@ -323,7 +322,7 @@ async def bulk_watermarktmask_cmd(client, message: Message):
     bulk_state[chat_id]['step'] = 'await_text'
     await message.reply_text("Send watermark text for bulk text watermarking.")
 
-# ─── New Bulk Video Handler ─────────────────────────────
+# ─── New Bulk Video Handler ─────────────
 @app.on_message(filters.private & (filters.video | filters.document))
 async def bulk_video_handler(client, message: Message):
     if not await check_authorization(message):
@@ -333,7 +332,7 @@ async def bulk_video_handler(client, message: Message):
         bulk_state[chat_id].setdefault('videos', []).append(message)
         await message.reply_text("Video added for bulk watermarking.")
 
-# ─── New Bulk Text Handler ─────────────────────────────
+# ─── New Bulk Text Handler ─────────────
 @app.on_message(filters.text & filters.private)
 async def bulk_text_handler(client, message: Message):
     if not await check_authorization(message):
@@ -648,13 +647,16 @@ async def process_watermark(client, message, state, chat_id):
 
     # Retrieve metadata from watermarked video
     metadata = get_video_details(output_file)
-    width = metadata.get("width")
-    height = metadata.get("height")
+    width = metadata.get("width", 0)
+    height = metadata.get("height", 0)
     duration_value = int(metadata.get("duration", 0))
 
     # Generate a thumbnail from the watermarked video
     thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
     thumb = generate_thumbnail(output_file, thumb_path)
+
+    # Create DocumentAttributeVideo with metadata
+    video_attr = DocumentAttributeVideo(duration=duration_value, width=width, height=height)
 
     try:
         upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
@@ -662,51 +664,26 @@ async def process_watermark(client, message, state, chat_id):
         upload_msg = None
     upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
     original_caption = video_msg.caption if video_msg.caption else "Here is your watermarked video."
-    # Check file size; if it exceeds 1.9GB, split by size (using computed segment duration)
-    threshold = 1.9 * (1024**3)  # 1.9GB in bytes
-    output_size = os.path.getsize(output_file)
-    if output_size > threshold:
-        video_duration = await get_video_duration(output_file)
-        segment_time = int((threshold / output_size) * video_duration)
-        if segment_time < 1:
-            segment_time = 1
-        segments_dir = os.path.join(temp_dir, "segments")
-        os.makedirs(segments_dir, exist_ok=True)
-        parts = await split_video_file(output_file, segments_dir, segment_time)
-        for part in parts:
-            await client.send_video(
-                chat_id,
-                video=part,
-                thumb=thumb, 
-                caption=original_caption,
-                progress=upload_cb,
-                width=width,
-                height=height,
-                duration=duration_value
-            )
-        shutil.rmtree(segments_dir)
-    else:
-        try:
-            logger.info("Uploading watermarked video...")
-            await client.send_video(
-                chat_id,
-                video=output_file,
-                thumb=thumb,
-                caption=original_caption,
-                progress=upload_cb,
-                width=width,
-                height=height,
-                duration=duration_value
-            )
-            logger.info("Upload completed successfully.")
-            if upload_msg:
-                try:
-                    await upload_msg.edit_text("Upload complete.")
-                except FloodWait:
-                    pass
-        except Exception as e:
-            logger.error(f"Error sending video for chat {chat_id}: {e}")
-            await message.reply_text("Failed to send watermarked video.")
+    # Upload with metadata and thumbnail using file_attributes
+    try:
+        logger.info("Uploading watermarked video...")
+        await client.send_video(
+            chat_id,
+            video=output_file,
+            thumb=thumb,
+            caption=original_caption,
+            progress=upload_cb,
+            file_attributes=[video_attr]
+        )
+        logger.info("Upload completed successfully.")
+        if upload_msg:
+            try:
+                await upload_msg.edit_text("Upload complete.")
+            except FloodWait:
+                pass
+    except Exception as e:
+        logger.error(f"Error sending video for chat {chat_id}: {e}")
+        await message.reply_text("Failed to send watermarked video.")
     shutil.rmtree(temp_dir)
     if chat_id in user_state:
         del user_state[chat_id]
@@ -818,38 +795,24 @@ async def process_bulk_watermark(client, message, state, chat_id):
             upload_msg = None
         upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
         original_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
-        # For bulk, we don't generate a thumbnail or metadata. (Implement similarly if needed.)
-        output_size = os.path.getsize(output_file)
-        threshold = 1.9 * (1024**3)
-        if output_size > threshold:
-            video_duration = await get_video_duration(output_file)
-            segment_time = int((threshold / output_size) * video_duration)
-            if segment_time < 1:
-                segment_time = 1
-            segments_dir = os.path.join(temp_dir, "segments")
-            os.makedirs(segments_dir, exist_ok=True)
-            parts = await split_video_file(output_file, segments_dir, segment_time)
-            for part in parts:
-                await client.send_video(chat_id, video=part, caption=original_caption, progress=upload_cb)
-            shutil.rmtree(segments_dir)
-        else:
-            try:
-                logger.info("Uploading watermarked video for bulk video...")
-                await client.send_video(
-                    chat_id,
-                    video=output_file,
-                    caption=original_caption,
-                    progress=upload_cb
-                )
-                logger.info("Upload completed successfully for bulk video.")
-                if upload_msg:
-                    try:
-                        await upload_msg.edit_text("Upload complete.")
-                    except FloodWait:
-                        pass
-            except Exception as e:
-                logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
-                await client.send_message(chat_id, "Failed to send watermarked video.")
+        # For bulk mode, metadata and thumbnail are not generated by default.
+        try:
+            logger.info("Uploading watermarked video for bulk video...")
+            await client.send_video(
+                chat_id,
+                video=output_file,
+                caption=original_caption,
+                progress=upload_cb
+            )
+            logger.info("Upload completed successfully for bulk video.")
+            if upload_msg:
+                try:
+                    await upload_msg.edit_text("Upload complete.")
+                except FloodWait:
+                    pass
+        except Exception as e:
+            logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
+            await client.send_message(chat_id, "Failed to send watermarked video.")
         shutil.rmtree(temp_dir)
     if chat_id in bulk_state:
         del bulk_state[chat_id]
@@ -916,7 +879,7 @@ async def process_overlay(client, message, state, chat_id):
 async def process_imgwatermark(client, message, state, chat_id):
     await client.send_message(chat_id, "Image watermark processing is not modified in bulk mode.")
 
-# ─── Start the Pyrogram Client ─────────────────────────────
+# ─── Start the Pyrogram Client ─────────────
 if __name__ == '__main__':
     # Optional: Test thumbnail and metadata functions before starting the bot.
     test_video = "path/to/your/test_video.mp4"
