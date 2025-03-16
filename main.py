@@ -308,6 +308,7 @@ async def bulk_video_handler(client, message: Message):
         bulk_state[chat_id].setdefault('videos', []).append(message)
         await message.reply_text("Video added for bulk watermarking.")
 
+# ─── Bulk Text Handler (with custom thumbnail & caption for bulk mode) ───
 @app.on_message(filters.text & filters.private)
 async def bulk_text_handler(client, message: Message):
     if not await check_authorization(message):
@@ -346,8 +347,29 @@ async def bulk_text_handler(client, message: Message):
             await message.reply_text("Invalid preset. Please send one of: medium, fast, superfast, ultrafast.")
             return
         state['preset'] = preset
+        state['step'] = 'ask_thumbnail'
+        await message.reply_text("Do you want to use a custom thumbnail? (yes/no)")
+    elif state.get('step') == 'ask_thumbnail':
+        answer = message.text.strip().lower()
+        if answer in ['yes', 'y']:
+            state['step'] = 'await_thumbnail'
+            await message.reply_text("Please send your custom thumbnail image.")
+        else:
+            state['step'] = 'ask_caption'
+            await message.reply_text("Do you want to add a custom extra caption? (yes/no)")
+    elif state.get('step') == 'ask_caption':
+        answer = message.text.strip().lower()
+        if answer in ['yes', 'y']:
+            state['step'] = 'await_caption'
+            await message.reply_text("Please send your custom extra caption text.")
+        else:
+            state['step'] = 'processing'
+            await message.reply_text("All inputs collected. Bulk watermarking started.")
+            await process_bulk_watermark(client, message, state, chat_id)
+    elif state.get('step') == 'await_caption':
+        state['custom_caption'] = message.text.strip()
         state['step'] = 'processing'
-        await message.reply_text("All inputs collected. Bulk watermarking started.")
+        await message.reply_text("Custom caption received. Bulk watermarking started.")
         await process_bulk_watermark(client, message, state, chat_id)
 
 # ─── Existing Video Handler for Single Processing ───
@@ -391,17 +413,25 @@ async def video_handler(client, message: Message):
         state['step'] = 'await_image'
         await message.reply_text("Video received. Now send the watermark image.")
 
-# ─── Updated Image Handler for Custom Thumbnail and /imgwatermark ───
+# ─── Updated Image Handler for Custom Thumbnail (Single & Bulk) and /imgwatermark ───
 @app.on_message(filters.private & (filters.photo | filters.document))
 async def image_handler(client, message: Message):
     if not await check_authorization(message):
         return
     global processing_active
     chat_id = message.chat.id
+    # Handle bulk mode custom thumbnail first
+    if chat_id in bulk_state:
+        bulk_state_obj = bulk_state[chat_id]
+        if bulk_state_obj.get('step') == 'await_thumbnail':
+            bulk_state_obj['custom_thumbnail'] = message
+            bulk_state_obj['step'] = 'ask_caption'
+            await message.reply_text("Custom thumbnail received. Do you want to add a custom extra caption? (yes/no)")
+            return
+    # Then handle single mode custom thumbnail
     if chat_id not in user_state:
         return
     state = user_state[chat_id]
-    # Handle custom thumbnail for watermark commands
     if state.get('step') == 'await_thumbnail':
         state['custom_thumbnail'] = message
         state['step'] = 'ask_caption'
@@ -795,7 +825,13 @@ async def process_bulk_watermark(client, message, state, chat_id):
         height = metadata.get("height", 0)
         duration_value = int(metadata.get("duration", 0))
         thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
-        thumb = generate_thumbnail(output_file, thumb_path)
+        # Use the custom thumbnail if provided; otherwise, generate one.
+        if 'custom_thumbnail' in state:
+            custom_thumb_path = os.path.join(temp_dir, f"{base_name}_custom_thumbnail.jpg")
+            await state['custom_thumbnail'].download(file_name=custom_thumb_path)
+            thumb = custom_thumb_path
+        else:
+            thumb = generate_thumbnail(output_file, thumb_path)
 
         try:
             upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
@@ -803,6 +839,8 @@ async def process_bulk_watermark(client, message, state, chat_id):
             upload_msg = None
         upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
         original_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
+        if 'custom_caption' in state:
+            original_caption += "\n\n" + state['custom_caption']
         try:
             logger.info("Uploading watermarked video for bulk video...")
             await client.send_video(
