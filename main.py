@@ -391,7 +391,7 @@ async def video_handler(client, message: Message):
         state['step'] = 'await_image'
         await message.reply_text("Video received. Now send the watermark image.")
 
-# ─── Existing Image Handler for /imgwatermark ───
+# ─── Updated Image Handler for Custom Thumbnail and /imgwatermark ───
 @app.on_message(filters.private & (filters.photo | filters.document))
 async def image_handler(client, message: Message):
     if not await check_authorization(message):
@@ -401,6 +401,12 @@ async def image_handler(client, message: Message):
     if chat_id not in user_state:
         return
     state = user_state[chat_id]
+    # Handle custom thumbnail for watermark commands
+    if state.get('step') == 'await_thumbnail':
+        state['custom_thumbnail'] = message
+        state['step'] = 'ask_caption'
+        await message.reply_text("Custom thumbnail received. Do you want to add a custom extra caption? (yes/no)")
+        return
     if state.get('mode') == 'imgwatermark' and state.get('step') == 'await_image':
         state['image_message'] = message
         state['step'] = 'processing'
@@ -414,7 +420,7 @@ async def image_handler(client, message: Message):
         finally:
             processing_active = False
 
-# ─── Existing Text Handler for Single Processing ───
+# ─── Updated Text Handler for Single Processing (Custom Thumbnail & Caption) ───
 @app.on_message(filters.text & filters.private)
 async def text_handler(client, message: Message):
     if not await check_authorization(message):
@@ -457,12 +463,34 @@ async def text_handler(client, message: Message):
                 await message.reply_text("Invalid preset. Please send one of: medium, fast, superfast, ultrafast.")
                 return
             state['preset'] = preset
+            state['step'] = 'ask_thumbnail'
+            await message.reply_text("Do you want to use a custom thumbnail? (yes/no)")
+        elif current_step == 'ask_thumbnail':
+            answer = message.text.strip().lower()
+            if answer in ['yes', 'y']:
+                state['step'] = 'await_thumbnail'
+                await message.reply_text("Please send your custom thumbnail image.")
+            else:
+                state['step'] = 'ask_caption'
+                await message.reply_text("Do you want to add a custom extra caption? (yes/no)")
+        elif current_step == 'ask_caption':
+            answer = message.text.strip().lower()
+            if answer in ['yes', 'y']:
+                state['step'] = 'await_caption'
+                await message.reply_text("Please send your custom extra caption text.")
+            else:
+                state['step'] = 'processing'
+                await message.reply_text("All inputs collected. Watermarking started.")
+                processing_active = True
+                try:
+                    await process_watermark(client, message, state, chat_id)
+                finally:
+                    processing_active = False
+        elif current_step == 'await_caption':
+            state['custom_caption'] = message.text.strip()
             state['step'] = 'processing'
-            if processing_active:
-                await message.reply_text("A process is already running; please try later.")
-                return
+            await message.reply_text("Custom caption received. Watermarking started.")
             processing_active = True
-            await message.reply_text("All inputs collected. Watermarking started.")
             try:
                 await process_watermark(client, message, state, chat_id)
             finally:
@@ -610,20 +638,29 @@ async def process_watermark(client, message, state, chat_id):
             del user_state[chat_id]
         return
 
-    # Retrieve metadata and generate thumbnail from watermarked video
+    # Retrieve metadata and generate/upload thumbnail:
     metadata = get_video_details(output_file)
     width = metadata.get("width", 0)
     height = metadata.get("height", 0)
     duration_value = int(metadata.get("duration", 0))
     thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
-    thumb = generate_thumbnail(output_file, thumb_path)
+    # Use the custom thumbnail if provided; otherwise, generate one.
+    if 'custom_thumbnail' in state:
+        custom_thumb_path = os.path.join(temp_dir, f"{base_name}_custom_thumbnail.jpg")
+        await state['custom_thumbnail'].download(file_name=custom_thumb_path)
+        thumb = custom_thumb_path
+    else:
+        thumb = generate_thumbnail(output_file, thumb_path)
 
     try:
         upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
     except FloodWait:
         upload_msg = None
     upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
+    # Append custom caption text if available.
     original_caption = video_msg.caption if video_msg.caption else "Here is your watermarked video."
+    if 'custom_caption' in state:
+        original_caption += "\n\n" + state['custom_caption']
     logger.info("Uploading watermarked video...")
     try:
         await client.send_video(
