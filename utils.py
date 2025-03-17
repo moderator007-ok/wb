@@ -20,6 +20,7 @@ ALLOWED_ADMINS = [640815756, 5317760109]
 processing_active = False
 user_state = {}
 bulk_state = {}
+user_data = {}  # Ensure user_data is defined
 
 # Logging Configuration
 logging.basicConfig(
