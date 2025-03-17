@@ -296,7 +296,7 @@ async def bulk_video_handler(client, message: Message):
         await message.reply_text("Video added for bulk watermarking.")
 
 # ─── Bulk Text Handler (with custom thumbnail & caption for bulk mode) ───
-# (Update this handler to ignore commands that start with /pdf)
+# Note: This handler ignores messages starting with /pdf so they pass through.
 @app.on_message(filters.text & filters.private & ~filters.regex(r"^/pdf"), group=0)
 async def bulk_text_handler(client, message: Message):
     if not await check_authorization(message):
@@ -361,7 +361,7 @@ async def bulk_text_handler(client, message: Message):
         await process_bulk_watermark(client, message, state, chat_id)
 
 # ─── Existing Video Handler for Single Processing ───
-# (Update this handler as well so it doesn’t catch messages starting with /pdf)
+# This handler is updated to ignore messages starting with /pdf.
 @app.on_message(filters.private & (filters.video | filters.document) & ~filters.regex(r"^/pdf"))
 async def video_handler(client, message: Message):
     if not await check_authorization(message):
@@ -403,6 +403,7 @@ async def video_handler(client, message: Message):
         await message.reply_text("Video received. Now send the watermark image.")
 
 # ─── Updated Image Handler for Custom Thumbnail (Single & Bulk) and /imgwatermark ───
+# This handler is updated to ignore messages starting with /pdf.
 @app.on_message(filters.private & (filters.photo | filters.document) & ~filters.regex(r"^/pdf"))
 async def image_handler(client, message: Message):
     if not await check_authorization(message):
@@ -440,6 +441,7 @@ async def image_handler(client, message: Message):
             processing_active = False
 
 # ─── Updated Text Handler for Single Processing (Custom Thumbnail & Caption) ───
+# This handler is updated to ignore messages starting with /pdf.
 @app.on_message(filters.text & filters.private & ~filters.regex(r"^/pdf"), group=0)
 async def text_handler(client, message: Message):
     if not await check_authorization(message):
@@ -1080,4 +1082,5 @@ async def process_imgwatermark(client, message, state, chat_id):
         del user_state[chat_id]
 
 if __name__ == '__main__':
+    logger.info("Starting PDF watermarking bot...")
     app.run()
