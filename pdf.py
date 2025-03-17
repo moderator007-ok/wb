@@ -418,3 +418,11 @@ async def handle_text_handler(client: Client, message: Message):
 if __name__ == '__main__':
     logger.info("Starting PDF watermarking bot...")
     app.run()
+
+
+# Test function to verify that pdf.py is being imported
+def _test_import():
+    logger.info("pdf.py module has been imported successfully.")
+
+
+_test_import()
