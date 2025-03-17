@@ -10,7 +10,7 @@ import shutil
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
-from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
+from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH, app
 from moviepy.editor import VideoFileClip  # Importing MoviePy
 
 from pdf import (
