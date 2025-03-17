@@ -24,4 +24,5 @@ COPY . .
 # Copy the Courier New font to the image
 COPY cour.ttf /usr/share/fonts/truetype/cour.ttf
 
-CMD ["sh", "-c", "gunicorn app:app & python3 main.py"]
+# Use the requested command in shell form.
+CMD gunicorn app:app & python3 main.py
