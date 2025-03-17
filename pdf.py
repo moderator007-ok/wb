@@ -1,6 +1,7 @@
 import os
 import tempfile
 from io import BytesIO
+import logging
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -28,13 +29,17 @@ WAITING_FOR_WATERMARK_TEXT = "WAITING_FOR_WATERMARK_TEXT"
 WAITING_FOR_TEXT_SIZE = "WAITING_FOR_TEXT_SIZE"
 WAITING_FOR_COLOR = "WAITING_FOR_COLOR"
 
+
 def normalized_to_pdf_coords(norm_coord, page_width, page_height):
     v, h = norm_coord
     pdf_x = (h / 10) * page_width
     pdf_y = page_height - ((v / 10) * page_height)
+    logger.debug(f"Normalized coord {norm_coord} converted to PDF coord ({pdf_x}, {pdf_y})")
     return (pdf_x, pdf_y)
 
+
 def annotate_first_page_image(pdf_path, dpi=150):
+    logger.info(f"Annotating first page image for PDF: {pdf_path}")
     doc = fitz.open(pdf_path)
     page = doc[0]
     scale = dpi / 72
@@ -49,13 +54,16 @@ def annotate_first_page_image(pdf_path, dpi=150):
     
     img_width, img_height = image.size
 
+    # Draw border rectangle
     draw.rectangle([0, 0, img_width-1, img_height-1], outline="blue", width=2)
     
+    # Draw horizontal grid lines and numbers
     for i in range(11):
         x = (i/10) * img_width
         draw.line([(x, 0), (x, 10)], fill="blue", width=2)
         draw.text((x+2, 12), f"{i}", fill="blue", font=font)
     
+    # Draw vertical grid lines and numbers
     for i in range(11):
         y = (i/10) * img_height
         draw.line([(0, y), (10, y)], fill="blue", width=2)
@@ -63,14 +71,18 @@ def annotate_first_page_image(pdf_path, dpi=150):
     
     annotated_path = pdf_path.replace(".pdf", "_annotated.jpg")
     image.save(annotated_path)
+    logger.info(f"Annotated image saved to {annotated_path}")
     doc.close()
     return annotated_path
 
+
 async def send_first_page_image(client: Client, chat_id: int):
+    logger.info(f"Sending first page annotated image to chat_id: {chat_id}")
     try:
         pdf_info = user_data[chat_id]["pdfs"][0]
         temp_pdf_path = os.path.join(tempfile.gettempdir(), pdf_info["file_name"])
         await client.download_media(pdf_info["file_id"], file_name=temp_pdf_path)
+        logger.info(f"Downloaded PDF to {temp_pdf_path}")
         annotated_path = annotate_first_page_image(temp_pdf_path, dpi=150)
         await client.send_photo(
             chat_id,
@@ -82,13 +94,18 @@ async def send_first_page_image(client: Client, chat_id: int):
                      "• LEFT TOP (e.g., 2,3)\n"
                      "• RIGHT BOTTOM (e.g., 8,7)")
         )
+        logger.info("Annotated image sent successfully.")
         os.remove(temp_pdf_path)
         os.remove(annotated_path)
     except Exception as e:
+        logger.error(f"Error sending annotated image: {e}")
         await client.send_message(chat_id, f"Error sending annotated image: {e}")
 
+
 def create_watermarked_pdf(input_pdf_path, watermark_text, text_size, color, location, find_text=None, cover_coords=None):
+    logger.info(f"Creating watermarked PDF for {input_pdf_path} at location {location}")
     if location == 9 and find_text:
+        logger.info("Using OCR-based cover-up watermarking.")
         doc = fitz.open(input_pdf_path)
         dpi = 150
         scale = dpi / 72
@@ -112,6 +129,7 @@ def create_watermarked_pdf(input_pdf_path, watermark_text, text_size, color, loc
                     pdf_height = height / scale
                     pdf_y = page_height - ((top + height) / scale)
                     rect = fitz.Rect(pdf_x, pdf_y, pdf_x + pdf_width, pdf_y + pdf_height)
+                    logger.debug(f"Covering text '{word}' at {rect}")
                     page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1))
                     text_x = pdf_x
                     text_y = pdf_y + pdf_height + 2
@@ -119,9 +137,11 @@ def create_watermarked_pdf(input_pdf_path, watermark_text, text_size, color, loc
                     page.insert_text((text_x, text_y), watermark_text, fontsize=text_size, color=wm_color)
         output_pdf_path = input_pdf_path.replace(".pdf", "_watermarked.pdf")
         doc.save(output_pdf_path)
+        logger.info(f"Watermarked PDF saved as {output_pdf_path}")
         return output_pdf_path
 
     elif location == 10 and cover_coords and len(cover_coords) == 2:
+        logger.info("Using sides cover-up watermarking with normalized coordinates.")
         doc = fitz.open(input_pdf_path)
         for page in doc:
             page_width = page.rect.width
@@ -131,6 +151,7 @@ def create_watermarked_pdf(input_pdf_path, watermark_text, text_size, color, loc
             x1, y1 = left_top_pdf
             x2, y2 = right_bottom_pdf
             rect = fitz.Rect(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+            logger.debug(f"Cover rectangle: {rect}")
             page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1))
             center_x = (rect.x0 + rect.x1) / 2
             center_y = (rect.y0 + rect.y1) / 2
@@ -139,9 +160,11 @@ def create_watermarked_pdf(input_pdf_path, watermark_text, text_size, color, loc
             page.insert_textbox(text_box, watermark_text, fontsize=text_size, color=wm_color, align=1)
         output_pdf_path = input_pdf_path.replace(".pdf", "_watermarked.pdf")
         doc.save(output_pdf_path)
+        logger.info(f"Watermarked PDF saved as {output_pdf_path}")
         return output_pdf_path
 
     else:
+        logger.info("Using default watermarking (ReportLab merge) on PDF.")
         reader = PdfReader(input_pdf_path)
         first_page = reader.pages[0]
         page_width = float(first_page.mediabox.width)
@@ -180,6 +203,7 @@ def create_watermarked_pdf(input_pdf_path, watermark_text, text_size, color, loc
             x = margin
             y = margin
 
+        logger.debug(f"Watermark will be placed at ({x}, {y}) with rotation {rotation}")
         if rotation:
             c.saveState()
             c.translate(x, y)
@@ -199,11 +223,15 @@ def create_watermarked_pdf(input_pdf_path, watermark_text, text_size, color, loc
         output_pdf_path = input_pdf_path.replace(".pdf", "_watermarked.pdf")
         with open(output_pdf_path, "wb") as out_file:
             writer.write(out_file)
+        logger.info(f"Watermarked PDF saved as {output_pdf_path}")
         return output_pdf_path
 
+
 async def process_pdfs_handler(client: Client, chat_id: int):
+    logger.info(f"Processing PDFs for watermarking for chat_id: {chat_id}")
     data = user_data.get(chat_id)
     if not data:
+        logger.error("No user data found.")
         return
     pdfs = data.get("pdfs", [])
     location = data.get("location")
@@ -219,10 +247,13 @@ async def process_pdfs_handler(client: Client, chat_id: int):
     for pdf_info in pdfs:
         file_id = pdf_info["file_id"]
         file_name = pdf_info["file_name"]
+        logger.info(f"Processing PDF: {file_name}")
         try:
             temp_pdf_path = os.path.join(tempfile.gettempdir(), file_name)
             await client.download_media(file_id, file_name=temp_pdf_path)
+            logger.info(f"Downloaded PDF to {temp_pdf_path}")
         except Exception as e:
+            logger.error(f"Error downloading {file_name}: {e}")
             await client.send_message(chat_id, f"Error downloading {file_name}: {e}")
             continue
 
@@ -232,19 +263,25 @@ async def process_pdfs_handler(client: Client, chat_id: int):
         )
         try:
             await client.send_document(chat_id, watermarked_pdf_path)
+            logger.info(f"Sent watermarked PDF: {watermarked_pdf_path}")
         except Exception as e:
+            logger.error(f"Error sending watermarked file {file_name}: {e}")
             await client.send_message(chat_id, f"Error sending watermarked file {file_name}: {e}")
         try:
             os.remove(temp_pdf_path)
             os.remove(watermarked_pdf_path)
-        except Exception:
-            pass
+            logger.info("Temporary files removed.")
+        except Exception as e:
+            logger.warning(f"Error removing temporary files: {e}")
+
 
 @app.on_message(filters.command("pdfwatermark"))
 async def start_pdfwatermark_handler(client: Client, message: Message):
     chat_id = message.chat.id
+    logger.info(f"Starting PDF watermark process for chat_id: {chat_id}")
     user_data[chat_id] = {"state": WAITING_FOR_PDF, "pdfs": []}
     await message.reply_text("Please send all PDF files now.")
+
 
 @app.on_message(filters.document)
 async def receive_pdf_handler(client: Client, message: Message):
@@ -255,11 +292,13 @@ async def receive_pdf_handler(client: Client, message: Message):
     if document.mime_type != "application/pdf":
         await message.reply_text("This is not a PDF file. Please send a PDF.")
         return
+    logger.info(f"Received PDF: {document.file_name} from chat_id: {chat_id}")
     user_data[chat_id]["pdfs"].append({
         "file_id": document.file_id,
         "file_name": document.file_name
     })
     await message.reply_text(f"Received {document.file_name}. You can send more PDFs or type /pdfask when done.")
+
 
 @app.on_message(filters.command("pdfask"))
 async def start_pdfask_handler(client: Client, message: Message):
@@ -268,6 +307,7 @@ async def start_pdfask_handler(client: Client, message: Message):
         await message.reply_text("No PDFs received. Please start with /pdfwatermark and then send PDF files.")
         return
     user_data[chat_id]["state"] = WAITING_FOR_LOCATION
+    logger.info(f"User {chat_id} set state to WAITING_FOR_LOCATION")
     await message.reply_text(
         "Choose watermark location by sending a number:\n"
         "1. Top right\n"
@@ -282,6 +322,7 @@ async def start_pdfask_handler(client: Client, message: Message):
         "10. Sides Cover-Up (rectangle with normalized 0-10 coordinates)"
     )
 
+
 @app.on_message(filters.text & ~filters.command(["pdfwatermark", "pdfask"]))
 async def handle_text_handler(client: Client, message: Message):
     chat_id = message.chat.id
@@ -289,6 +330,7 @@ async def handle_text_handler(client: Client, message: Message):
         return
     state = user_data[chat_id].get("state")
     text = message.text.strip()
+    logger.info(f"Handling text for chat_id: {chat_id} in state: {state} with text: {text}")
     
     if state == WAITING_FOR_LOCATION:
         try:
@@ -302,13 +344,16 @@ async def handle_text_handler(client: Client, message: Message):
         user_data[chat_id]["location"] = loc
         if loc == 9:
             user_data[chat_id]["state"] = WAITING_FOR_FIND_TEXT
+            logger.info("State changed to WAITING_FOR_FIND_TEXT")
             await message.reply_text("Enter the text to find (the text you want to cover up):")
         elif loc == 10:
             await send_first_page_image(client, chat_id)
             user_data[chat_id]["state"] = WAITING_FOR_SIDE_TOP_LEFT
+            logger.info("State changed to WAITING_FOR_SIDE_TOP_LEFT")
             await message.reply_text("Enter the LEFT TOP normalized coordinate (format: x,y in 0-10, e.g., 2,3):")
         else:
             user_data[chat_id]["state"] = WAITING_FOR_WATERMARK_TEXT
+            logger.info("State changed to WAITING_FOR_WATERMARK_TEXT")
             await message.reply_text("Enter watermark text:")
     elif state == WAITING_FOR_FIND_TEXT:
         if not text:
@@ -316,6 +361,7 @@ async def handle_text_handler(client: Client, message: Message):
             return
         user_data[chat_id]["find_text"] = text
         user_data[chat_id]["state"] = WAITING_FOR_WATERMARK_TEXT
+        logger.info("State changed to WAITING_FOR_WATERMARK_TEXT")
         await message.reply_text("Enter watermark text:")
     elif state == WAITING_FOR_SIDE_TOP_LEFT:
         try:
@@ -326,6 +372,7 @@ async def handle_text_handler(client: Client, message: Message):
             return
         user_data[chat_id]["side_coords"] = [coord]
         user_data[chat_id]["state"] = WAITING_FOR_SIDE_BOTTOM_RIGHT
+        logger.info("State changed to WAITING_FOR_SIDE_BOTTOM_RIGHT")
         await message.reply_text("Enter the RIGHT BOTTOM normalized coordinate (format: x,y in 0-10, e.g., 8,7):")
     elif state == WAITING_FOR_SIDE_BOTTOM_RIGHT:
         try:
@@ -336,6 +383,7 @@ async def handle_text_handler(client: Client, message: Message):
             return
         user_data[chat_id]["side_coords"].append(coord)
         user_data[chat_id]["state"] = WAITING_FOR_WATERMARK_TEXT
+        logger.info("State changed to WAITING_FOR_WATERMARK_TEXT")
         await message.reply_text("Enter watermark text:")
     elif state == WAITING_FOR_WATERMARK_TEXT:
         if not text:
@@ -343,6 +391,7 @@ async def handle_text_handler(client: Client, message: Message):
             return
         user_data[chat_id]["watermark_text"] = text
         user_data[chat_id]["state"] = WAITING_FOR_TEXT_SIZE
+        logger.info("State changed to WAITING_FOR_TEXT_SIZE")
         await message.reply_text("Enter watermark text size (e.g., 24):")
     elif state == WAITING_FOR_TEXT_SIZE:
         try:
@@ -352,6 +401,7 @@ async def handle_text_handler(client: Client, message: Message):
             return
         user_data[chat_id]["text_size"] = size
         user_data[chat_id]["state"] = WAITING_FOR_COLOR
+        logger.info("State changed to WAITING_FOR_COLOR")
         await message.reply_text("Choose watermark text colour by sending a number:\n1. Red\n2. Black\n3. White")
     elif state == WAITING_FOR_COLOR:
         mapping = {"1": "red", "2": "black", "3": "white"}
@@ -359,9 +409,12 @@ async def handle_text_handler(client: Client, message: Message):
             await message.reply_text("Invalid choice. Please choose 1, 2, or 3 for colour.")
             return
         user_data[chat_id]["color"] = mapping[text]
+        logger.info("PDF watermarking parameters collected. Starting processing.")
         await message.reply_text("PDF watermarking started.")
         await process_pdfs_handler(client, chat_id)
         user_data.pop(chat_id, None)
 
+
 if __name__ == '__main__':
+    logger.info("Starting PDF watermarking bot...")
     app.run()
