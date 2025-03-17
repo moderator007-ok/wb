@@ -275,7 +275,7 @@ async def process_pdfs_handler(client: Client, chat_id: int):
             logger.warning(f"Error removing temporary files: {e}")
 
 
-@app.on_message(filters.command("pdfwatermark"), group=10)
+@app.on_message(filters.command("pdfwatermark"))
 async def start_pdfwatermark_handler(client: Client, message: Message):
     chat_id = message.chat.id
     logger.info(f"Starting PDF watermark process for chat_id: {chat_id}")
@@ -283,7 +283,7 @@ async def start_pdfwatermark_handler(client: Client, message: Message):
     await message.reply_text("Please send all PDF files now.")
 
 
-@app.on_message(filters.document, group=10)
+@app.on_message(filters.document)
 async def receive_pdf_handler(client: Client, message: Message):
     chat_id = message.chat.id
     if chat_id not in user_data or user_data[chat_id].get("state") != WAITING_FOR_PDF:
@@ -300,7 +300,7 @@ async def receive_pdf_handler(client: Client, message: Message):
     await message.reply_text(f"Received {document.file_name}. You can send more PDFs or type /pdfask when done.")
 
 
-@app.on_message(filters.command("pdfask"), group=10)
+@app.on_message(filters.command("pdfask"))
 async def start_pdfask_handler(client: Client, message: Message):
     chat_id = message.chat.id
     if chat_id not in user_data or not user_data[chat_id].get("pdfs"):
@@ -323,7 +323,7 @@ async def start_pdfask_handler(client: Client, message: Message):
     )
 
 
-@app.on_message(filters.text & ~filters.command(["pdfwatermark", "pdfask"]), group=10)
+@app.on_message(filters.text & ~filters.command(["pdfwatermark", "pdfask"]))
 async def handle_text_handler(client: Client, message: Message):
     chat_id = message.chat.id
     if chat_id not in user_data:
