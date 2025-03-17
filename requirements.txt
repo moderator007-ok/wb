@@ -6,8 +6,3 @@ Jinja2==3.0.3
 werkzeug==2.0.2
 itsdangerous==2.0.1
 moviepy==1.0.3
-PyPDF2==3.0.1
-reportlab==3.6.12
-pytesseract==0.3.10
-Pillow==9.5.0
-PyMuPDF==1.22.5
