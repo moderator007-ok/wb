@@ -23,7 +23,19 @@ from reportlab.lib.colors import red, black, white
 import pytesseract
 from PIL import Image, ImageDraw, ImageFont
 import fitz  # PyMuPDF
+import logging
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+logger = logging.getLogger(__name__)
+
+# Example usage of logging
+logger.info("Logging is configured and ready to use.")
 # Set the Tesseract OCR executable path.
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\becom\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
