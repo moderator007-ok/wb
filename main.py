@@ -10,17 +10,10 @@ import shutil
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
+from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 from moviepy.editor import VideoFileClip  # Importing MoviePy
 
-from utils import (
-    BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH, app, logger, check_authorization,
-    user_state, bulk_state, processing_active, user_data
-)
-
-# (Note: pdf.py functions have been merged here so no separate import of pdf.py)
-
-# ─── Video Watermarking Functions ───
-
+# ─── Updated Function: Thumbnail Generation using FFmpeg ───
 def generate_thumbnail(video_file, thumbnail_path, time_offset="00:00:01.000"):
     """
     Generate a thumbnail image from a video file using FFmpeg.
@@ -43,6 +36,7 @@ def generate_thumbnail(video_file, thumbnail_path, time_offset="00:00:01.000"):
         logging.error(f"Thumbnail generation failed: {e.stderr.decode('utf-8')}")
         return None
 
+# ─── Updated Function: Retrieve Video Details with MoviePy and ffprobe Fallback ───
 def get_video_details(video_file):
     """
     Retrieve video details (width, height, duration).
@@ -86,6 +80,33 @@ def get_video_details(video_file):
             logging.error(f"ffprobe failed to retrieve details: {ex}")
         return {}
 
+# ─── Allowed admin IDs ───
+ALLOWED_ADMINS = [640815756, 5317760109]
+
+# ─── Global flag and state dictionaries ───
+processing_active = False
+user_state = {}
+bulk_state = {}
+
+# ─── Logging Configuration ───
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+# ─── Initialize Pyrogram Client ───
+app = Client("watermark_robot_2", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# ─── Helper: Check Authorization ───
+async def check_authorization(message: Message) -> bool:
+    if message.chat.id not in ALLOWED_ADMINS:
+        await message.reply_text("You are not authorized.")
+        return False
+    return True
+
+# ─── Helper: Split Video File by Size ───
 async def split_video_file(input_file: str, output_dir: str, segment_time: int) -> list:
     output_pattern = os.path.join(output_dir, "part_%03d.mp4")
     split_cmd = [
@@ -110,6 +131,7 @@ async def split_video_file(input_file: str, output_dir: str, segment_time: int) 
     parts = sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.startswith("part_") and f.endswith(".mp4")])
     return parts
 
+# ─── Progress Callback Factories ───
 def create_download_progress(client, chat_id, progress_msg: Message):
     last_update = 0
     async def progress(current, total):
@@ -163,8 +185,7 @@ async def restart_cmd(client, message: Message):
     await message.reply_text("Bot is restarting...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
-# ─── Command Handlers for Video Watermarking ───
-# (Video watermarking uses user_state)
+# ─── Command Handlers for Single-Video Watermark Modes ───
 @app.on_message(filters.command("watermark") & filters.private)
 async def watermark_cmd(client, message: Message):
     if not await check_authorization(message):
@@ -245,91 +266,6 @@ async def imgwatermark_cmd(client, message: Message):
     }
     await message.reply_text("Send video for image watermarking.")
 
-# ─── Video Watermarking Text Handler ───
-# This handler is for video watermarking only. To ensure PDF watermarking texts are not intercepted,
-# we check if the chat ID is in user_data (PDF watermarking state) and return if so.
-@app.on_message(filters.text & filters.private)
-async def video_text_handler(client, message: Message):
-    if not await check_authorization(message):
-        return
-    chat_id = message.chat.id
-    # If PDF watermarking state exists, skip this handler.
-    if chat_id in user_data:
-        return
-    if chat_id not in user_state:
-        return
-    global processing_active
-    state = user_state[chat_id]
-    current_step = state.get('step')
-    mode = state.get('mode')
-    if mode in ['watermark', 'watermarktm']:
-        if current_step == 'await_text':
-            state['watermark_text'] = message.text.strip()
-            state['step'] = 'await_size'
-            await message.reply_text("Watermark text received. Please send font size (as a number).")
-        elif current_step == 'await_size':
-            try:
-                size = int(message.text.strip())
-                state['font_size'] = size
-                state['step'] = 'await_color'
-                await message.reply_text("Font size received. Now send color choice: 1 for black, 2 for white, 3 for red.")
-            except ValueError:
-                await message.reply_text("Invalid font size. Please send a number.")
-        elif current_step == 'await_color':
-            choice = message.text.strip()
-            if choice == "1":
-                state['font_color'] = "black"
-            elif choice == "2":
-                state['font_color'] = "white"
-            elif choice == "3":
-                state['font_color'] = "red"
-            else:
-                state['font_color'] = "white"
-            state['step'] = 'await_preset'
-            await message.reply_text("Color received. Now send ffmpeg preset (choose: medium, fast, superfast, ultrafast).")
-        elif current_step == 'await_preset':
-            preset = message.text.strip().lower()
-            if preset not in {"medium", "fast", "superfast", "ultrafast"}:
-                await message.reply_text("Invalid preset. Please send one of: medium, fast, superfast, ultrafast.")
-                return
-            state['preset'] = preset
-            state['step'] = 'ask_thumbnail'
-            await message.reply_text("Do you want to use a custom thumbnail? (yes/no)")
-        elif current_step == 'ask_thumbnail':
-            answer = message.text.strip().lower()
-            if answer in ['yes', 'y']:
-                state['step'] = 'await_thumbnail'
-                await message.reply_text("Please send your custom thumbnail image.")
-            else:
-                state['step'] = 'ask_caption'
-                await message.reply_text("Do you want to add a custom extra caption? (yes/no)")
-        elif current_step == 'ask_caption':
-            answer = message.text.strip().lower()
-            if answer in ['yes', 'y']:
-                state['step'] = 'await_caption'
-                await message.reply_text("Please send your custom extra caption text.")
-            else:
-                state['step'] = 'processing'
-                await message.reply_text("All inputs collected. Watermarking started.")
-                processing_active = True
-                try:
-                    await process_watermark(client, message, state, chat_id)
-                finally:
-                    processing_active = False
-        elif current_step == 'await_caption':
-            state['custom_caption'] = message.text.strip()
-            state['step'] = 'processing'
-            await message.reply_text("Custom caption received. Watermarking started.")
-            processing_active = True
-            try:
-                await process_watermark(client, message, state, chat_id)
-            finally:
-                processing_active = False
-    elif mode == 'harrypotter':
-        pass
-    elif mode == 'overlay':
-        pass
-
 # ─── Bulk Watermarking Commands and Handlers ───
 @app.on_message(filters.command("inputwatermark") & filters.private)
 async def inputwatermark_bulk(client, message: Message):
@@ -372,6 +308,7 @@ async def bulk_video_handler(client, message: Message):
         bulk_state[chat_id].setdefault('videos', []).append(message)
         await message.reply_text("Video added for bulk watermarking.")
 
+# ─── Bulk Text Handler (with custom thumbnail & caption for bulk mode) ───
 @app.on_message(filters.text & filters.private)
 async def bulk_text_handler(client, message: Message):
     if not await check_authorization(message):
@@ -435,19 +372,93 @@ async def bulk_text_handler(client, message: Message):
         await message.reply_text("Custom caption received. Bulk watermarking started.")
         await process_bulk_watermark(client, message, state, chat_id)
 
-# ─── Video Watermarking Handler (for non-PDF texts) ───
-# (This handler now does not process texts if PDF watermarking state exists.)
-@app.on_message(filters.text & filters.private)
-async def video_text_handler(client, message: Message):
+# ─── Existing Video Handler for Single Processing ───
+@app.on_message(filters.private & (filters.video | filters.document))
+async def video_handler(client, message: Message):
     if not await check_authorization(message):
         return
+    global processing_active
     chat_id = message.chat.id
-    # If PDF watermarking state exists, skip this handler.
-    if chat_id in user_data:
-        return
     if chat_id not in user_state:
         return
+    state = user_state[chat_id]
+    mode = state.get('mode')
+    if mode in ['watermark', 'watermarktm']:
+        if state.get('step') != 'await_video':
+            return
+        state['video_message'] = message
+        state['step'] = 'await_text'
+        await message.reply_text("Video captured. Now send the watermark text.")
+    elif mode == 'harrypotter':
+        if processing_active:
+            await message.reply_text("A process is already running; please try later.")
+            return
+        state['video_message'] = message
+        state['step'] = 'processing'
+        await message.reply_text("Video captured. Watermarking started.")
+        processing_active = True
+        try:
+            await process_watermark(client, message, state, chat_id)
+        finally:
+            processing_active = False
+    elif mode == 'overlay':
+        if state.get('step') == 'await_main':
+            state['main_video_message'] = message
+            state['step'] = 'await_overlay'
+            await message.reply_text("Main video received. Now send the **overlay video** (with green screen background).")
+    elif mode == 'imgwatermark':
+        if state.get('step') != 'await_video':
+            return
+        state['video_message'] = message
+        state['step'] = 'await_image'
+        await message.reply_text("Video received. Now send the watermark image.")
+
+# ─── Updated Image Handler for Custom Thumbnail (Single & Bulk) and /imgwatermark ───
+@app.on_message(filters.private & (filters.photo | filters.document))
+async def image_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
     global processing_active
+    chat_id = message.chat.id
+    # Handle bulk mode custom thumbnail first
+    if chat_id in bulk_state:
+        bulk_state_obj = bulk_state[chat_id]
+        if bulk_state_obj.get('step') == 'await_thumbnail':
+            bulk_state_obj['custom_thumbnail'] = message
+            bulk_state_obj['step'] = 'ask_caption'
+            await message.reply_text("Custom thumbnail received. Do you want to add a custom extra caption? (yes/no)")
+            return
+    # Then handle single mode custom thumbnail
+    if chat_id not in user_state:
+        return
+    state = user_state[chat_id]
+    if state.get('step') == 'await_thumbnail':
+        state['custom_thumbnail'] = message
+        state['step'] = 'ask_caption'
+        await message.reply_text("Custom thumbnail received. Do you want to add a custom extra caption? (yes/no)")
+        return
+    if state.get('mode') == 'imgwatermark' and state.get('step') == 'await_image':
+        state['image_message'] = message
+        state['step'] = 'processing'
+        await message.reply_text("Image received. Processing video with image watermark, please wait...")
+        if processing_active:
+            await message.reply_text("A process is already running; please try later.")
+            return
+        processing_active = True
+        try:
+            await process_imgwatermark(client, message, state, chat_id)
+        finally:
+            processing_active = False
+
+# ─── Updated Text Handler for Single Processing (Custom Thumbnail & Caption) ───
+@app.on_message(filters.text & filters.private)
+async def text_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
+    global processing_active
+    chat_id = message.chat.id
+    if chat_id not in user_state:
+        return
     state = user_state[chat_id]
     current_step = state.get('step')
     mode = state.get('mode')
@@ -519,188 +530,414 @@ async def video_text_handler(client, message: Message):
     elif mode == 'overlay':
         pass
 
-# ─── Image Handler ───
-@app.on_message(filters.private & (filters.photo | filters.document))
-async def image_handler(client, message: Message):
-    if not await check_authorization(message):
-        return
-    global processing_active
-    chat_id = message.chat.id
-    # Handle bulk mode custom thumbnail first
-    if chat_id in bulk_state:
-        bulk_state_obj = bulk_state[chat_id]
-        if bulk_state_obj.get('step') == 'await_thumbnail':
-            bulk_state_obj['custom_thumbnail'] = message
-            bulk_state_obj['step'] = 'ask_caption'
-            await message.reply_text("Custom thumbnail received. Do you want to add a custom extra caption? (yes/no)")
-            return
-    # Then handle single mode custom thumbnail
-    if chat_id not in user_state:
-        return
-    state = user_state[chat_id]
-    if state.get('step') == 'await_thumbnail':
-        state['custom_thumbnail'] = message
-        state['step'] = 'ask_caption'
-        await message.reply_text("Custom thumbnail received. Do you want to add a custom extra caption? (yes/no)")
-        return
-    if state.get('mode') == 'imgwatermark' and state.get('step') == 'await_image':
-        state['image_message'] = message
-        state['step'] = 'processing'
-        await message.reply_text("Image received. Processing video with image watermark, please wait...")
-        if processing_active:
-            await message.reply_text("A process is already running; please try later.")
-            return
-        processing_active = True
-        try:
-            await process_imgwatermark(client, message, state, chat_id)
-        finally:
-            processing_active = False
-
-# ─── PDF Watermarking Commands and Handlers ───
-@app.on_message(filters.command("pdfwatermark"))
-async def start_pdfwatermark_handler(client, message: Message):
-    chat_id = message.chat.id
-    logger.info(f"Starting PDF watermark process for chat_id: {chat_id}")
-    user_data[chat_id] = {"state": WAITING_FOR_PDF, "pdfs": []}
-    await message.reply_text("Please send all PDF files now.")
-
-@app.on_message(filters.document)
-async def receive_pdf_handler(client, message: Message):
-    chat_id = message.chat.id
-    if chat_id not in user_data or user_data[chat_id].get("state") != WAITING_FOR_PDF:
-        return
-    document = message.document
-    if document.mime_type != "application/pdf":
-        await message.reply_text("This is not a PDF file. Please send a PDF.")
-        return
-    logger.info(f"Received PDF: {document.file_name} from chat_id: {chat_id}")
-    user_data[chat_id]["pdfs"].append({
-        "file_id": document.file_id,
-        "file_name": document.file_name
-    })
-    await message.reply_text(f"Received {document.file_name}. You can send more PDFs or type /pdfask when done.")
-
-@app.on_message(filters.command("pdfask"))
-async def start_pdfask_handler(client, message: Message):
-    chat_id = message.chat.id
-    if chat_id not in user_data or not user_data[chat_id].get("pdfs"):
-        await message.reply_text("No PDFs received. Please start with /pdfwatermark and then send PDF files.")
-        return
-    user_data[chat_id]["state"] = WAITING_FOR_LOCATION
-    logger.info(f"User {chat_id} set state to WAITING_FOR_LOCATION")
-    await message.reply_text(
-        "Choose watermark location by sending a number:\n"
-        "1. Top right\n"
-        "2. Top middle\n"
-        "3. Top left\n"
-        "4. Middle straight\n"
-        "5. Middle 45 degree\n"
-        "6. Bottom right\n"
-        "7. Bottom centre\n"
-        "8. Bottom left\n"
-        "9. Cover-Up (using OCR)\n"
-        "10. Sides Cover-Up (rectangle with normalized 0-10 coordinates)"
+# ─── Helper Function: Get Video Duration Using ffprobe ───
+async def get_video_duration(file_path):
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
     )
-
-@app.on_message(filters.text & ~filters.command(["pdfwatermark", "pdfask"]))
-async def pdf_text_handler(client, message: Message):
-    if not await check_authorization(message):
-        return
-    chat_id = message.chat.id
-    if chat_id not in user_data:
-        return
-    state = user_data[chat_id].get("state")
-    text = message.text.strip()
-    logger.info(f"Handling PDF text for chat_id: {chat_id} in state: {state} with text: {text}")
-    
-    if state == WAITING_FOR_LOCATION:
+    stdout, _ = await proc.communicate()
+    try:
+        duration = float(stdout.decode().strip())
+    except Exception as e:
+        logger.error("Error getting format duration: " + str(e))
+        duration = 0.0
+    if duration < 60:
+        proc2 = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout2, _ = await proc2.communicate()
         try:
-            loc = int(text)
-            if loc < 1 or loc > 10:
-                await message.reply_text("Invalid choice. Please send a number between 1 and 10 for location.")
-                return
-        except ValueError:
-            await message.reply_text("Please send a valid number for location.")
-            return
-        user_data[chat_id]["location"] = loc
-        if loc == 9:
-            user_data[chat_id]["state"] = WAITING_FOR_FIND_TEXT
-            logger.info("PDF state changed to WAITING_FOR_FIND_TEXT")
-            await message.reply_text("Enter the text to find (the text you want to cover up):")
-        elif loc == 10:
-            await send_first_page_image(client, chat_id)
-            user_data[chat_id]["state"] = WAITING_FOR_SIDE_TOP_LEFT
-            logger.info("PDF state changed to WAITING_FOR_SIDE_TOP_LEFT")
-            await message.reply_text("Enter the LEFT TOP normalized coordinate (format: x,y in 0-10, e.g., 2,3):")
+            stream_duration = float(stdout2.decode().strip())
+            duration = max(duration, stream_duration)
+        except Exception as e:
+            logger.error("Error getting stream duration: " + str(e))
+    return duration
+
+# ─── Processing Function for Single Watermark ───
+async def process_watermark(client, message, state, chat_id):
+    try:
+        progress_msg = await client.send_message(chat_id, "Downloading: 0%")
+    except FloodWait:
+        progress_msg = None
+    temp_dir = tempfile.mkdtemp()
+    state['temp_dir'] = temp_dir
+    video_msg = state['video_message']
+    if video_msg.video:
+        file_name = video_msg.video.file_name or f"{video_msg.video.file_id}.mp4"
+    elif video_msg.document:
+        file_name = video_msg.document.file_name or f"{video_msg.document.file_id}.mp4"
+    else:
+        file_name = "input_video.mp4"
+    input_file_path = os.path.join(temp_dir, file_name)
+    download_cb = create_download_progress(client, chat_id, progress_msg) if progress_msg else None
+    logger.info("Starting video download...")
+    await video_msg.download(file_name=input_file_path, progress=download_cb)
+    logger.info("Video download completed.")
+    if progress_msg:
+        try:
+            await progress_msg.edit_text("Download complete. Watermarking started.")
+        except FloodWait:
+            progress_msg = None
+    duration_sec = await get_video_duration(input_file_path)
+    if duration_sec <= 0:
+        duration_sec = 1  # safeguard
+    base_name = os.path.splitext(os.path.basename(input_file_path))[0]
+    if state['mode'] == 'watermarktm':
+        font_path = "cour.ttf"  # Adjust if necessary.
+    else:
+        font_path = "/usr/share/fonts/truetype/consola.ttf"  # Adjust if needed.
+    if state['mode'] in ['watermark', 'harrypotter']:
+        filter_str = (
+            f"drawtext=text='{state['watermark_text']}':"
+            f"fontcolor={state['font_color']}:" 
+            f"fontsize={state['font_size']}:" 
+            f"x=(w-text_w)/2:" 
+            f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
+        )
+    elif state['mode'] == 'watermarktm':
+        filter_str = (
+            f"drawtext=text='{state['watermark_text']}':"
+            f"fontfile={font_path}:" 
+            f"fontcolor={state['font_color']}:" 
+            f"fontsize={state['font_size']}:" 
+            f"font='Courier New':"
+            f"x='mod(t\\,30)*30':"
+            f"y='mod(t\\,30)*15'"
+        )
+    output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
+    ffmpeg_cmd = [
+        FFMPEG_PATH,
+        "-fflags", "+genpts",
+        "-i", input_file_path,
+        "-vf", filter_str,
+        "-c:v", "libx264", "-crf", "23", "-preset", state.get('preset', 'medium'),
+        "-movflags", "+faststart",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        "-progress", "pipe:1",
+        output_file
+    ]
+    logger.info("Starting watermarking process...")
+    proc = await asyncio.create_subprocess_exec(
+        *ffmpeg_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT
+    )
+    last_logged = 0
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        decoded_line = line.decode('utf-8').strip()
+        logger.info(decoded_line)
+        if decoded_line.startswith("out_time_ms="):
+            try:
+                out_time_val = int(decoded_line.split("=")[1])
+                current_sec = out_time_val / 1000000.0
+                current_percent = (current_sec / duration_sec) * 100
+                if current_percent > 100:
+                    current_percent = 100
+                if current_percent - last_logged >= 5 or current_percent == 100:
+                    last_logged = current_percent
+                    if progress_msg:
+                        try:
+                            await progress_msg.edit_text(f"Watermark processing: {current_percent:.0f}% completed")
+                        except FloodWait:
+                            progress_msg = None
+            except Exception as e:
+                logger.error("Error parsing ffmpeg progress: " + str(e))
+        if decoded_line == "progress=end":
+            break
+    await proc.wait()
+    if proc.returncode != 0:
+        logger.error(f"Error processing watermark. Return code: {proc.returncode}")
+        await message.reply_text("Error processing watermarked video.")
+        shutil.rmtree(temp_dir)
+        if chat_id in user_state:
+            del user_state[chat_id]
+        return
+
+    # Retrieve metadata and generate/upload thumbnail:
+    metadata = get_video_details(output_file)
+    width = metadata.get("width", 0)
+    height = metadata.get("height", 0)
+    duration_value = int(metadata.get("duration", 0))
+    thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
+    # Use the custom thumbnail if provided; otherwise, generate one.
+    if 'custom_thumbnail' in state:
+        custom_thumb_path = os.path.join(temp_dir, f"{base_name}_custom_thumbnail.jpg")
+        await state['custom_thumbnail'].download(file_name=custom_thumb_path)
+        thumb = custom_thumb_path
+    else:
+        thumb = generate_thumbnail(output_file, thumb_path)
+
+    try:
+        upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
+    except FloodWait:
+        upload_msg = None
+    upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
+    # Append custom caption text if available.
+    original_caption = video_msg.caption if video_msg.caption else "Here is your watermarked video."
+    if 'custom_caption' in state:
+        original_caption += "\n\n" + state['custom_caption']
+    logger.info("Uploading watermarked video...")
+    try:
+        await client.send_video(
+            chat_id,
+            video=output_file,
+            thumb=thumb,
+            caption=original_caption,
+            progress=upload_cb,
+            width=width,
+            height=height,
+            duration=duration_value,
+            supports_streaming=True
+        )
+        logger.info("Upload completed successfully.")
+        if upload_msg:
+            try:
+                await upload_msg.edit_text("Upload complete.")
+            except FloodWait:
+                pass
+    except Exception as e:
+        logger.error(f"Error sending video for chat {chat_id}: {e}")
+        await message.reply_text("Failed to send watermarked video.")
+    shutil.rmtree(temp_dir)
+    if chat_id in user_state:
+        del user_state[chat_id]
+
+# ─── Processing Function for Bulk Watermark ───
+async def process_bulk_watermark(client, message, state, chat_id):
+    videos = state.get('videos', [])
+    for video_msg in videos:
+        temp_dir = tempfile.mkdtemp()
+        if video_msg.video:
+            file_name = video_msg.video.file_name or f"{video_msg.video.file_id}.mp4"
+        elif video_msg.document:
+            file_name = video_msg.document.file_name or f"{video_msg.document.file_id}.mp4"
         else:
-            user_data[chat_id]["state"] = WAITING_FOR_WATERMARK_TEXT
-            logger.info("PDF state changed to WAITING_FOR_WATERMARK_TEXT")
-            await message.reply_text("Enter watermark text:")
-    elif state == WAITING_FOR_FIND_TEXT:
-        if not text:
-            await message.reply_text("Text to find cannot be empty. Please enter the text to cover up:")
-            return
-        user_data[chat_id]["find_text"] = text
-        user_data[chat_id]["state"] = WAITING_FOR_WATERMARK_TEXT
-        logger.info("PDF state changed to WAITING_FOR_WATERMARK_TEXT")
-        await message.reply_text("Enter watermark text:")
-    elif state == WAITING_FOR_SIDE_TOP_LEFT:
+            file_name = "input_video.mp4"
+        input_file_path = os.path.join(temp_dir, file_name)
         try:
-            x_str, y_str = text.split(",")
-            coord = (float(x_str.strip()), float(y_str.strip()))
-        except Exception:
-            await message.reply_text("Invalid format. Please enter coordinate as x,y (e.g., 2,3).")
-            return
-        user_data[chat_id]["side_coords"] = [coord]
-        user_data[chat_id]["state"] = WAITING_FOR_SIDE_BOTTOM_RIGHT
-        logger.info("PDF state changed to WAITING_FOR_SIDE_BOTTOM_RIGHT")
-        await message.reply_text("Enter the RIGHT BOTTOM normalized coordinate (format: x,y in 0-10, e.g., 8,7):")
-    elif state == WAITING_FOR_SIDE_BOTTOM_RIGHT:
-        try:
-            x_str, y_str = text.split(",")
-            coord = (float(x_str.strip()), float(y_str.strip()))
-        except Exception:
-            await message.reply_text("Invalid format. Please enter coordinate as x,y (e.g., 8,7).")
-            return
-        user_data[chat_id]["side_coords"].append(coord)
-        user_data[chat_id]["state"] = WAITING_FOR_WATERMARK_TEXT
-        logger.info("PDF state changed to WAITING_FOR_WATERMARK_TEXT")
-        await message.reply_text("Enter watermark text:")
-    elif state == WAITING_FOR_WATERMARK_TEXT:
-        if not text:
-            await message.reply_text("Watermark text cannot be empty. Please enter the watermark text.")
-            return
-        user_data[chat_id]["watermark_text"] = text
-        user_data[chat_id]["state"] = WAITING_FOR_TEXT_SIZE
-        logger.info("PDF state changed to WAITING_FOR_TEXT_SIZE")
-        await message.reply_text("Enter watermark text size (e.g., 24):")
-    elif state == WAITING_FOR_TEXT_SIZE:
-        try:
-            size = int(text)
-        except ValueError:
-            await message.reply_text("Please send a valid number for text size.")
-            return
-        user_data[chat_id]["text_size"] = size
-        user_data[chat_id]["state"] = WAITING_FOR_COLOR
-        logger.info("PDF state changed to WAITING_FOR_COLOR")
-        await message.reply_text("Choose watermark text colour by sending a number:\n1. Red\n2. Black\n3. White")
-    elif state == WAITING_FOR_COLOR:
-        mapping = {"1": "red", "2": "black", "3": "white"}
-        if text not in mapping:
-            await message.reply_text("Invalid choice. Please choose 1, 2, or 3 for colour.")
-            return
-        user_data[chat_id]["color"] = mapping[text]
-        logger.info("PDF watermarking parameters collected. Starting processing.")
-        await message.reply_text("PDF watermarking started.")
-        await process_pdfs_handler(client, chat_id)
-        user_data.pop(chat_id, None)
+            progress_msg = await client.send_message(chat_id, "Downloading: 0%")
+        except FloodWait:
+            progress_msg = None
+        download_cb = create_download_progress(client, chat_id, progress_msg) if progress_msg else None
+        logger.info("Starting video download for bulk video...")
+        await video_msg.download(file_name=input_file_path, progress=download_cb)
+        logger.info("Video download completed for bulk video.")
+        if progress_msg:
+            try:
+                await progress_msg.edit_text("Download complete. Watermarking started.")
+            except FloodWait:
+                progress_msg = None
+        duration_sec = await get_video_duration(input_file_path)
+        if duration_sec <= 0:
+            duration_sec = 1
+        base_name = os.path.splitext(os.path.basename(input_file_path))[0]
+        if state['mode'] == 'watermarktm':
+            font_path = "cour.ttf"
+        else:
+            font_path = "/usr/share/fonts/truetype/consola.ttf"
+        if state['mode'] == 'watermark':
+            filter_str = (
+                f"drawtext=text='{state['watermark_text']}':"
+                f"fontcolor={state['font_color']}:" 
+                f"fontsize={state['font_size']}:" 
+                f"x=(w-text_w)/2:" 
+                f"y=(h-text_h-10)+((10-(h-text_h-10))*(mod(t\\,30)/30))"
+            )
+        elif state['mode'] == 'watermarktm':
+            filter_str = (
+                f"drawtext=text='{state['watermark_text']}':"
+                f"fontfile={font_path}:" 
+                f"fontcolor={state['font_color']}:" 
+                f"fontsize={state['font_size']}:" 
+                f"font='Courier New':"
+                f"x='mod(t\\,30)*30':"
+                f"y='mod(t\\,30)*15'"
+            )
+        output_file = os.path.join(temp_dir, f"{base_name}_watermarked.mp4")
+        ffmpeg_cmd = [
+            FFMPEG_PATH,
+            "-fflags", "+genpts",
+            "-i", input_file_path,
+            "-vf", filter_str,
+            "-c:v", "libx264", "-crf", "23", "-preset", state.get('preset', 'medium'),
+            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            "-progress", "pipe:1",
+            output_file
+        ]
+        logger.info("Starting watermarking process for bulk video...")
+        proc = await asyncio.create_subprocess_exec(
+            *ffmpeg_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        last_logged = 0
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            decoded_line = line.decode('utf-8').strip()
+            logger.info(decoded_line)
+            if decoded_line.startswith("out_time_ms="):
+                try:
+                    out_time_val = int(decoded_line.split("=")[1])
+                    current_sec = out_time_val / 1000000.0
+                    current_percent = (current_sec / duration_sec) * 100
+                    if current_percent > 100:
+                        current_percent = 100
+                    if current_percent - last_logged >= 5 or current_percent == 100:
+                        last_logged = current_percent
+                        if progress_msg:
+                            try:
+                                await progress_msg.edit_text(f"Watermark processing: {current_percent:.0f}% completed")
+                            except FloodWait:
+                                progress_msg = None
+                except Exception as e:
+                    logger.error("Error parsing ffmpeg progress for bulk: " + str(e))
+            if decoded_line == "progress=end":
+                break
+        await proc.wait()
+        if proc.returncode != 0:
+            logger.error(f"Error processing watermark for bulk video. Return code: {proc.returncode}")
+            await client.send_message(chat_id, "Error processing watermarked video.")
+            shutil.rmtree(temp_dir)
+            continue
 
-# ─── Dummy Test Command for PDF Functions ───
-@app.on_message(filters.command("testpdf"))
-async def testpdf_cmd(client, message: Message):
-    await message.reply_text("Test PDF command received! PDF functions are imported and active.")
+        # Retrieve metadata and generate thumbnail for the processed bulk video
+        metadata = get_video_details(output_file)
+        width = metadata.get("width", 0)
+        height = metadata.get("height", 0)
+        duration_value = int(metadata.get("duration", 0))
+        thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
+        # Use the custom thumbnail if provided; otherwise, generate one.
+        if 'custom_thumbnail' in state:
+            custom_thumb_path = os.path.join(temp_dir, f"{base_name}_custom_thumbnail.jpg")
+            await state['custom_thumbnail'].download(file_name=custom_thumb_path)
+            thumb = custom_thumb_path
+        else:
+            thumb = generate_thumbnail(output_file, thumb_path)
 
-# ─── End of Merged Code ───
+        try:
+            upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
+        except FloodWait:
+            upload_msg = None
+        upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
+        original_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
+        if 'custom_caption' in state:
+            original_caption += "\n\n" + state['custom_caption']
+        try:
+            logger.info("Uploading watermarked video for bulk video...")
+            await client.send_video(
+                chat_id,
+                video=output_file,
+                thumb=thumb,
+                caption=original_caption,
+                progress=upload_cb,
+                width=width,
+                height=height,
+                duration=duration_value,
+                supports_streaming=True
+            )
+            logger.info("Upload completed successfully for bulk video.")
+            if upload_msg:
+                try:
+                    await upload_msg.edit_text("Upload complete.")
+                except FloodWait:
+                    pass
+        except Exception as e:
+            logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
+            await client.send_message(chat_id, "Failed to send watermarked video.")
+        shutil.rmtree(temp_dir)
+    if chat_id in bulk_state:
+        del bulk_state[chat_id]
+
+# ─── Processing Functions for Overlay and Image Watermark ───
+async def process_overlay(client, message, state, chat_id):
+    temp_dir = tempfile.mkdtemp()
+    state['temp_dir'] = temp_dir
+    progress_msg = await client.send_message(chat_id, "Downloading main video: 0%")
+    main_msg = state['main_video_message']
+    if main_msg.video:
+        main_file_name = main_msg.video.file_name or f"{main_msg.video.file_id}.mp4"
+    elif main_msg.document:
+        main_file_name = main_msg.document.file_name or f"{main_msg.document.file_id}.mp4"
+    else:
+        main_file_name = "main_video.mp4"
+    main_file_path = os.path.join(temp_dir, main_file_name)
+    download_cb = create_download_progress(client, chat_id, progress_msg)
+    logger.info("Downloading main video...")
+    await main_msg.download(file_name=main_file_path, progress=download_cb)
+    logger.info("Main video downloaded.")
+    await progress_msg.edit_text("Main video downloaded.")
+    await progress_msg.edit_text("Downloading overlay video: 0%")
+    overlay_msg = state['overlay_video_message']
+    if overlay_msg.video:
+        overlay_file_name = overlay_msg.video.file_name or f"{overlay_msg.video.file_id}.mp4"
+    elif overlay_msg.document:
+        overlay_file_name = overlay_msg.document.file_name or f"{overlay_msg.document.file_id}.mp4"
+    else:
+        overlay_file_name = "overlay_video.mp4"
+    overlay_file_path = os.path.join(temp_dir, overlay_file_name)
+    download_cb = create_download_progress(client, chat_id, progress_msg)
+    logger.info("Downloading overlay video...")
+    await overlay_msg.download(file_name=overlay_file_path, progress=download_cb)
+    logger.info("Overlay video downloaded.")
+    await progress_msg.edit_text("Overlay video downloaded.")
+    await progress_msg.edit_text("Pre-processing overlay video...")
+    processed_overlay_path = os.path.join(temp_dir, "processed_overlay.mov")
+    pre_process_cmd = [
+        FFMPEG_PATH,
+        "-i", overlay_file_path,
+        "-vf", "colorkey=0x00FF00:0.3:0.2,format=yuva420p",
+        "-c:v", "qtrle",
+        processed_overlay_path
+    ]
+    proc_pre = await asyncio.create_subprocess_exec(
+        *pre_process_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT
+    )
+    while True:
+        line = await proc_pre.stdout.readline()
+        if not line:
+            break
+        logger.info(line.decode('utf-8').strip())
+    await proc_pre.wait()
+    if proc_pre.returncode != 0:
+        await client.send_message(chat_id, "Error in pre-processing overlay video.")
+        shutil.rmtree(temp_dir)
+        return
+    # (Overlay processing logic continues here …)
+    shutil.rmtree(temp_dir)
+
+async def process_imgwatermark(client, message, state, chat_id):
+    await client.send_message(chat_id, "Image watermark processing is not modified in bulk mode.")
+
+# ─── Start the Pyrogram Client ───
 if __name__ == '__main__':
-    logger.info("Starting combined bot for video and PDF watermarking...")
+    # Optional: Test thumbnail and metadata functions before starting the bot.
+    test_video = "path/to/your/test_video.mp4"
+    thumbnail = "path/to/output_thumbnail.jpg"
+    thumb = generate_thumbnail(test_video, thumbnail)
+    if thumb:
+        logging.info(f"Thumbnail generated at: {thumb}")
+    metadata = get_video_details(test_video)
+    if metadata:
+        logging.info(f"Video metadata: {metadata}")
     app.run()
