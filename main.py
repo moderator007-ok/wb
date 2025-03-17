@@ -508,15 +508,17 @@ async def bulk_video_handler(client, message: Message):
 # (This handler will only run if the chat is not in PDF watermarking mode.)
 @app.on_message(filters.text & filters.private)
 async def text_handler(client, message: Message):
-    chat_id = message.chat.id
-    # Do not process if PDF watermarking is active
-    if chat_id in user_data:
+    if not await check_authorization(message):
         return
+    global processing_active  # Declare the global variable once at the top.
+    
+    chat_id = message.chat.id
     if chat_id not in user_state:
         return
     state = user_state[chat_id]
     current_step = state.get('step')
     mode = state.get('mode')
+
     if mode in ['watermark', 'watermarktm']:
         if current_step == 'await_text':
             state['watermark_text'] = message.text.strip()
@@ -566,7 +568,6 @@ async def text_handler(client, message: Message):
             else:
                 state['step'] = 'processing'
                 await message.reply_text("All inputs collected. Watermarking started.")
-                global processing_active
                 processing_active = True
                 try:
                     await process_watermark(client, message, state, chat_id)
@@ -576,7 +577,6 @@ async def text_handler(client, message: Message):
             state['custom_caption'] = message.text.strip()
             state['step'] = 'processing'
             await message.reply_text("Custom caption received. Watermarking started.")
-            global processing_active
             processing_active = True
             try:
                 await process_watermark(client, message, state, chat_id)
