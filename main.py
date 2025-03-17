@@ -399,7 +399,8 @@ async def video_handler(client, message: Message):
         state['video_message'] = message
         state['step'] = 'await_image'
         await message.reply_text("Video received. Now send the watermark image.")
-        # ─── Updated Image Handler for Custom Thumbnail (Single & Bulk) and /imgwatermark ───
+
+# ─── Updated Image Handler for Custom Thumbnail (Single & Bulk) and /imgwatermark ───
 @app.on_message(filters.private & (filters.photo | filters.document))
 async def image_handler(client, message: Message):
     if not await check_authorization(message):
@@ -804,53 +805,54 @@ async def process_bulk_watermark(client, message, state, chat_id):
             await client.send_message(chat_id, "Error processing watermarked video.")
             shutil.rmtree(temp_dir)
             continue
-            # Retrieve metadata and generate thumbnail for the processed bulk video
-metadata = get_video_details(output_file)
-width = metadata.get("width", 0)
-height = metadata.get("height", 0)
-duration_value = int(metadata.get("duration", 0))
-thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
-# Use the custom thumbnail if provided; otherwise, generate one.
-if 'custom_thumbnail' in state:
-    custom_thumb_path = os.path.join(temp_dir, f"{base_name}_custom_thumbnail.jpg")
-    await state['custom_thumbnail'].download(file_name=custom_thumb_path)
-    thumb = custom_thumb_path
-else:
-    thumb = generate_thumbnail(output_file, thumb_path)
-
-try:
-    upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
-except FloodWait:
-    upload_msg = None
-upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
-original_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
-if 'custom_caption' in state:
-    original_caption += "\n\n" + state['custom_caption']
-try:
-    logger.info("Uploading watermarked video for bulk video...")
-    await client.send_video(
-        chat_id,
-        video=output_file,
-        thumb=thumb,
-        caption=original_caption,
-        progress=upload_cb,
-        width=width,
-        height=height,
-        duration=duration_value,
-        supports_streaming=True
-    )
-    logger.info("Upload completed successfully for bulk video.")
-    if upload_msg:
+        # Retrieve metadata and generate thumbnail for the processed bulk video
+        metadata = get_video_details(output_file)
+        width = metadata.get("width", 0)
+        height = metadata.get("height", 0)
+        duration_value = int(metadata.get("duration", 0))
+        thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
+        # Use the custom thumbnail if provided; otherwise, generate one.
+        if 'custom_thumbnail' in state:
+            custom_thumb_path = os.path.join(temp_dir, f"{base_name}_custom_thumbnail.jpg")
+            await state['custom_thumbnail'].download(file_name=custom_thumb_path)
+            thumb = custom_thumb_path
+        else:
+            thumb = generate_thumbnail(output_file, thumb_path)
+    
         try:
-            await upload_msg.edit_text("Upload complete.")
+            upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
         except FloodWait:
-            pass
-except Exception as e:
-    logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
-    await client.send_message(chat_id, "Failed to send watermarked video.")
-shutil.rmtree(temp_dir)
-if chat_id in bulk_state:
-    del bulk_state[chat_id]
+            upload_msg = None
+        upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
+        original_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
+        if 'custom_caption' in state:
+            original_caption += "\n\n" + state['custom_caption']
+        try:
+            logger.info("Uploading watermarked video for bulk video...")
+            await client.send_video(
+                chat_id,
+                video=output_file,
+                thumb=thumb,
+                caption=original_caption,
+                progress=upload_cb,
+                width=width,
+                height=height,
+                duration=duration_value,
+                supports_streaming=True
+            )
+            logger.info("Upload completed successfully for bulk video.")
+            if upload_msg:
+                try:
+                    await upload_msg.edit_text("Upload complete.")
+                except FloodWait:
+                    pass
+        except Exception as e:
+            logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
+            await client.send_message(chat_id, "Failed to send watermarked video.")
+        shutil.rmtree(temp_dir)
+        # Optionally, you may clear the bulk state per video or once after processing all videos.
+    if chat_id in bulk_state:
+        del bulk_state[chat_id]
 
 # ─── Processing Functions for Overlay and Image Watermark ───
 async def process_overlay(client, message, state, chat_id):
@@ -908,8 +910,9 @@ async def process_overlay(client, message, state, chat_id):
         await client.send_message(chat_id, "Error in pre-processing overlay video.")
         shutil.rmtree(temp_dir)
         return
-    
-    # Continue with overlay processing logic...
+
+    # Define base name from main video for naming output files
+    base_name = os.path.splitext(os.path.basename(main_file_path))[0]
     overlay_output_file = os.path.join(temp_dir, f"{base_name}_overlayed.mp4")
     overlay_cmd = [
         FFMPEG_PATH,
@@ -935,7 +938,7 @@ async def process_overlay(client, message, state, chat_id):
         await client.send_message(chat_id, "Error in overlay processing.")
         shutil.rmtree(temp_dir)
         return
-    
+
     # Generate and upload the thumbnail for the overlay video
     overlay_metadata = get_video_details(overlay_output_file)
     overlay_width = overlay_metadata.get("width", 0)
@@ -997,6 +1000,8 @@ async def process_imgwatermark(client, message, state, chat_id):
             await progress_msg.edit_text("Download complete. Watermarking started.")
         except FloodWait:
             progress_msg = None
+    # Define base name for naming output file
+    base_name = os.path.splitext(os.path.basename(input_file_path))[0]
     image_msg = state['image_message']
     image_file_path = os.path.join(temp_dir, "watermark_image.png")
     await image_msg.download(file_name=image_file_path)
