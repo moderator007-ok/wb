@@ -7,299 +7,88 @@ import logging
 import tempfile
 import shutil
 
-# Common imports for video watermarking (from config) and for PDF watermarking:
-from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
-
-# Imports for video processing:
+from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 from moviepy.editor import VideoFileClip  # Importing MoviePy
 
-# Imports for PDF watermarking:
-from PyPDF2 import PdfReader, PdfWriter
-from reportlab.pdfgen import canvas
-from reportlab.lib.colors import red, black, white
-import pytesseract
-from PIL import Image, ImageDraw, ImageFont
-import fitz  # PyMuPDF
-import logging
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-
-logger = logging.getLogger(__name__)
-
-# Example usage of logging
-logger.info("Logging is configured and ready to use.")
-# Set the Tesseract OCR executable path.
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\becom\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
-
-# ───────────────────────────────────────────────
-# PDF Watermarking Functionality
-# ───────────────────────────────────────────────
-
-# Conversation states for PDF watermarking.
-WAITING_FOR_PDF = "WAITING_FOR_PDF"
-WAITING_FOR_LOCATION = "WAITING_FOR_LOCATION"
-WAITING_FOR_FIND_TEXT = "WAITING_FOR_FIND_TEXT"  # For OCR Cover-Up (option 9)
-WAITING_FOR_SIDE_TOP_LEFT = "WAITING_FOR_SIDE_TOP_LEFT"  # For Sides Cover-Up (option 10)
-WAITING_FOR_SIDE_BOTTOM_RIGHT = "WAITING_FOR_SIDE_BOTTOM_RIGHT"
-WAITING_FOR_WATERMARK_TEXT = "WAITING_FOR_WATERMARK_TEXT"
-WAITING_FOR_TEXT_SIZE = "WAITING_FOR_TEXT_SIZE"
-WAITING_FOR_COLOR = "WAITING_FOR_COLOR"
-
-# Global dictionary to store PDF watermarking conversation data.
-user_data = {}
-
-def normalized_to_pdf_coords(norm_coord, page_width, page_height):
+# ─── Updated Function: Thumbnail Generation using FFmpeg ───
+def generate_thumbnail(video_file, thumbnail_path, time_offset="00:00:01.000"):
     """
-    Converts a normalized coordinate (v,h) on a 0–10 scale into actual PDF coordinates.
-    PDF coordinates have origin at bottom-left.
+    Generate a thumbnail image from a video file using FFmpeg.
     """
-    v, h = norm_coord
-    pdf_x = (h / 10) * page_width
-    pdf_y = page_height - ((v / 10) * page_height)
-    return (pdf_x, pdf_y)
-
-def annotate_first_page_image(pdf_path, dpi=150):
-    """
-    Opens the PDF's first page using PyMuPDF, renders it as an image,
-    and draws a blue border with tick marks and normalized coordinate labels (0–10).
-    Returns the path of the annotated image.
-    """
-    doc = fitz.open(pdf_path)
-    page = doc[0]
-    scale = dpi / 72
-    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
-    image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    
-    draw = ImageDraw.Draw(image)
+    ffmpeg_executable = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+    # Move -ss before -i for faster seeking
+    command = [
+        ffmpeg_executable,
+        "-ss", time_offset,
+        "-i", video_file,
+        "-frames:v", "1",
+        "-y",  # Overwrite if exists
+        thumbnail_path
+    ]
     try:
-        font = ImageFont.truetype("arial.ttf", 12)
-    except Exception:
-        font = ImageFont.load_default()
-    
-    img_width, img_height = image.size
+        result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        logging.info("Thumbnail generated successfully.")
+        return thumbnail_path
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Thumbnail generation failed: {e.stderr.decode('utf-8')}")
+        return None
 
-    # Draw blue border.
-    draw.rectangle([0, 0, img_width-1, img_height-1], outline="blue", width=2)
-    
-    # Draw tick marks along the top edge.
-    for i in range(11):
-        x = (i/10) * img_width
-        draw.line([(x, 0), (x, 10)], fill="blue", width=2)
-        draw.text((x+2, 12), f"{i}", fill="blue", font=font)
-    
-    # Draw tick marks along the left edge.
-    for i in range(11):
-        y = (i/10) * img_height
-        draw.line([(0, y), (10, y)], fill="blue", width=2)
-        draw.text((12, y-6), f"{i}", fill="blue", font=font)
-    
-    annotated_path = pdf_path.replace(".pdf", "_annotated.jpg")
-    image.save(annotated_path)
-    doc.close()
-    return annotated_path
-
-async def send_first_page_image(client: Client, chat_id: int):
+# ─── Updated Function: Retrieve Video Details with MoviePy and ffprobe Fallback ───
+def get_video_details(video_file):
     """
-    Downloads the first PDF from the user's list, creates an annotated image of its first page,
-    and sends it to the user.
+    Retrieve video details (width, height, duration).
+    Attempts MoviePy first and falls back to ffprobe if needed.
     """
     try:
-        pdf_info = user_data[chat_id]["pdfs"][0]
-        temp_pdf_path = os.path.join(tempfile.gettempdir(), pdf_info["file_name"])
-        await client.download_media(pdf_info["file_id"], file_name=temp_pdf_path)
-        annotated_path = annotate_first_page_image(temp_pdf_path, dpi=150)
-        await client.send_photo(
-            chat_id,
-            photo=annotated_path,
-            caption=("This image shows a normalized grid:\n"
-                     "• Top edge: horizontal (x) scale: 0 (left) to 10 (right)\n"
-                     "• Left edge: vertical (y) scale: 0 (top) to 10 (bottom)\n\n"
-                     "Please provide two normalized coordinates in the format 'v,h' (values between 0 and 10):\n"
-                     "• LEFT TOP (e.g., 2,3)\n"
-                     "• RIGHT BOTTOM (e.g., 8,7)")
-        )
-        os.remove(temp_pdf_path)
-        os.remove(annotated_path)
+        clip = VideoFileClip(video_file)
+        details = {
+            "width": clip.w,
+            "height": clip.h,
+            "duration": clip.duration
+        }
+        clip.reader.close()
+        if clip.audio:
+            clip.audio.reader.close_proc()
+        return details
     except Exception as e:
-        await client.send_message(chat_id, f"Error sending annotated image: {e}")
-
-def create_watermarked_pdf(input_pdf_path, watermark_text, text_size, color, location, find_text=None, cover_coords=None):
-    """
-    Creates a watermarked PDF.
-      - For locations 1-8: standard watermark.
-      - For location 9 (OCR Cover-Up): covers found text using OCR.
-      - For location 10 (Sides Cover-Up): uses two normalized coordinates.
-    """
-    if location == 9 and find_text:
-        doc = fitz.open(input_pdf_path)
-        dpi = 150
-        scale = dpi / 72
-        for page in doc:
-            page_width = page.rect.width
-            page_height = page.rect.height
-            mat = fitz.Matrix(scale, scale)
-            pix = page.get_pixmap(matrix=mat)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-            n_boxes = len(ocr_data["text"])
-            for i in range(n_boxes):
-                word = ocr_data["text"][i].strip()
-                if word.lower() == find_text.lower():
-                    left = ocr_data["left"][i]
-                    top = ocr_data["top"][i]
-                    width = ocr_data["width"][i]
-                    height = ocr_data["height"][i]
-                    pdf_x = left / scale
-                    pdf_width = width / scale
-                    pdf_height = height / scale
-                    pdf_y = page_height - ((top + height) / scale)
-                    rect = fitz.Rect(pdf_x, pdf_y, pdf_x + pdf_width, pdf_y + pdf_height)
-                    page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1))
-                    text_x = pdf_x
-                    text_y = pdf_y + pdf_height + 2
-                    wm_color = (color.red, color.green, color.blue)
-                    page.insert_text((text_x, text_y), watermark_text, fontsize=text_size, color=wm_color)
-        output_pdf_path = input_pdf_path.replace(".pdf", "_watermarked.pdf")
-        doc.save(output_pdf_path)
-        return output_pdf_path
-
-    elif location == 10 and cover_coords and len(cover_coords) == 2:
-        doc = fitz.open(input_pdf_path)
-        for page in doc:
-            page_width = page.rect.width
-            page_height = page.rect.height
-            left_top_pdf = normalized_to_pdf_coords(cover_coords[0], page_width, page_height)
-            right_bottom_pdf = normalized_to_pdf_coords(cover_coords[1], page_width, page_height)
-            x1, y1 = left_top_pdf
-            x2, y2 = right_bottom_pdf
-            rect = fitz.Rect(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
-            page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1))
-            center_x = (rect.x0 + rect.x1) / 2
-            center_y = (rect.y0 + rect.y1) / 2
-            wm_color = (color.red, color.green, color.blue)
-            text_box = fitz.Rect(center_x - 100, center_y - text_size, center_x + 100, center_y + text_size)
-            page.insert_textbox(text_box, watermark_text, fontsize=text_size, color=wm_color, align=1)
-        output_pdf_path = input_pdf_path.replace(".pdf", "_watermarked.pdf")
-        doc.save(output_pdf_path)
-        return output_pdf_path
-
-    else:
-        # Standard watermarking using ReportLab and PyPDF2.
-        reader = PdfReader(input_pdf_path)
-        first_page = reader.pages[0]
-        page_width = float(first_page.mediabox.width)
-        page_height = float(first_page.mediabox.height)
-        watermark_stream = BytesIO()
-        c = canvas.Canvas(watermark_stream, pagesize=(page_width, page_height))
-        c.setFont("Helvetica", text_size)
-        c.setFillColor(color)
-        margin = 10
-
-        x, y = 0, 0
-        rotation = 0
-        if location == 1:
-            x = page_width - margin - 100
-            y = page_height - margin - text_size
-        elif location == 2:
-            x = (page_width / 2) - 50
-            y = page_height - margin - text_size
-        elif location == 3:
-            x = margin
-            y = page_height - margin - text_size
-        elif location == 4:
-            x = (page_width / 2) - 50
-            y = (page_height / 2) - (text_size / 2)
-        elif location == 5:
-            x = (page_width / 2) - 50
-            y = (page_height / 2) - (text_size / 2)
-            rotation = 45
-        elif location == 6:
-            x = page_width - margin - 100
-            y = margin
-        elif location == 7:
-            x = (page_width / 2) - 50
-            y = margin
-        elif location == 8:
-            x = margin
-            y = margin
-
-        if rotation:
-            c.saveState()
-            c.translate(x, y)
-            c.rotate(rotation)
-            c.drawString(0, 0, watermark_text)
-            c.restoreState()
-        else:
-            c.drawString(x, y, watermark_text)
-        c.save()
-        watermark_stream.seek(0)
-        watermark_reader = PdfReader(watermark_stream)
-        watermark_page = watermark_reader.pages[0]
-        writer = PdfWriter()
-        for page in reader.pages:
-            page.merge_page(watermark_page)
-            writer.add_page(page)
-        output_pdf_path = input_pdf_path.replace(".pdf", "_watermarked.pdf")
-        with open(output_pdf_path, "wb") as out_file:
-            writer.write(out_file)
-        return output_pdf_path
-
-async def process_pdfs_handler(client: Client, chat_id: int):
-    data = user_data.get(chat_id)
-    if not data:
-        return
-    pdfs = data.get("pdfs", [])
-    location = data.get("location")
-    watermark_text = data.get("watermark_text")
-    text_size = data.get("text_size")
-    color_name = data.get("color")
-    color_mapping = {"red": red, "black": black, "white": white}
-    watermark_color = color_mapping.get(color_name, black)
-    
-    find_text = data.get("find_text") if location == 9 else None
-    cover_coords = data.get("side_coords") if location == 10 else None
-
-    for pdf_info in pdfs:
-        file_id = pdf_info["file_id"]
-        file_name = pdf_info["file_name"]
+        logging.error(f"MoviePy failed to retrieve details: {e}. Falling back to ffprobe.")
         try:
-            temp_pdf_path = os.path.join(tempfile.gettempdir(), file_name)
-            await client.download_media(file_id, file_name=temp_pdf_path)
-        except Exception as e:
-            await client.send_message(chat_id, f"Error downloading {file_name}: {e}")
-            continue
+            ffprobe_executable = FFMPEG_PATH.replace("ffmpeg", "ffprobe") if FFMPEG_PATH else "ffprobe"
+            ffprobe_cmd = [
+                ffprobe_executable,
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_file
+            ]
+            result = subprocess.run(ffprobe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            output = result.stdout.decode('utf-8').strip().splitlines()
+            if len(output) >= 3:
+                details = {
+                    "width": int(output[0]),
+                    "height": int(output[1]),
+                    "duration": float(output[2])
+                }
+                return details
+            else:
+                logging.error("ffprobe did not return enough data.")
+        except Exception as ex:
+            logging.error(f"ffprobe failed to retrieve details: {ex}")
+        return {}
 
-        watermarked_pdf_path = create_watermarked_pdf(
-            temp_pdf_path, watermark_text, text_size, watermark_color,
-            location, find_text=find_text, cover_coords=cover_coords
-        )
-        try:
-            await client.send_document(chat_id, watermarked_pdf_path)
-        except Exception as e:
-            await client.send_message(chat_id, f"Error sending watermarked file {file_name}: {e}")
-        try:
-            os.remove(temp_pdf_path)
-            os.remove(watermarked_pdf_path)
-        except Exception:
-            pass
+# ─── Allowed admin IDs ───
+ALLOWED_ADMINS = [640815756, 5317760109]
 
-# ───────────────────────────────────────────────
-# Video Watermarking Functionality (Main Code)
-# ───────────────────────────────────────────────
-
-# Global flags and state dictionaries for video watermarking.
+# ─── Global flag and state dictionaries ───
 processing_active = False
 user_state = {}
 bulk_state = {}
 
+# ─── Logging Configuration ───
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -307,14 +96,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ─── Initialize Pyrogram Client ───
 app = Client("watermark_robot_2", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# ─── Helper: Check Authorization ───
 async def check_authorization(message: Message) -> bool:
-    if message.chat.id not in [640815756, 5317760109]:
+    if message.chat.id not in ALLOWED_ADMINS:
         await message.reply_text("You are not authorized.")
         return False
     return True
 
+# ─── Helper: Split Video File by Size ───
 async def split_video_file(input_file: str, output_dir: str, segment_time: int) -> list:
     output_pattern = os.path.join(output_dir, "part_%03d.mp4")
     split_cmd = [
@@ -336,10 +128,10 @@ async def split_video_file(input_file: str, output_dir: str, segment_time: int) 
     if proc.returncode != 0:
         logger.error(f"Error splitting video: {stderr.decode('utf-8')}")
         return []
-    parts = sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir)
-                    if f.startswith("part_") and f.endswith(".mp4")])
+    parts = sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.startswith("part_") and f.endswith(".mp4")])
     return parts
 
+# ─── Progress Callback Factories ───
 def create_download_progress(client, chat_id, progress_msg: Message):
     last_update = 0
     async def progress(current, total):
@@ -393,7 +185,7 @@ async def restart_cmd(client, message: Message):
     await message.reply_text("Bot is restarting...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
-# ─── Video Watermarking Commands ───
+# ─── Command Handlers for Single-Video Watermark Modes ───
 @app.on_message(filters.command("watermark") & filters.private)
 async def watermark_cmd(client, message: Message):
     if not await check_authorization(message):
@@ -516,21 +308,160 @@ async def bulk_video_handler(client, message: Message):
         bulk_state[chat_id].setdefault('videos', []).append(message)
         await message.reply_text("Video added for bulk watermarking.")
 
-# ─── Video Watermarking Text Handler ───
-# (This handler will only run if the chat is not in PDF watermarking mode.)
+# ─── Bulk Text Handler (with custom thumbnail & caption for bulk mode) ───
+@app.on_message(filters.text & filters.private)
+async def bulk_text_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
+    chat_id = message.chat.id
+    if chat_id not in bulk_state:
+        return  # Not in bulk mode
+    state = bulk_state[chat_id]
+    if state.get('step') == 'await_text':
+        state['watermark_text'] = message.text.strip()
+        state['step'] = 'await_size'
+        await message.reply_text("Watermark text received. Please send font size (as a number).")
+    elif state.get('step') == 'await_size':
+        try:
+            size = int(message.text.strip())
+            state['font_size'] = size
+            state['step'] = 'await_color'
+            await message.reply_text("Font size received. Now send color choice: 1 for black, 2 for white, 3 for red.")
+        except ValueError:
+            await message.reply_text("Invalid font size. Please send a number.")
+    elif state.get('step') == 'await_color':
+        choice = message.text.strip()
+        if choice == "1":
+            state['font_color'] = "black"
+        elif choice == "2":
+            state['font_color'] = "white"
+        elif choice == "3":
+            state['font_color'] = "red"
+        else:
+            state['font_color'] = "white"
+        state['step'] = 'await_preset'
+        await message.reply_text("Color received. Now send ffmpeg preset (choose: medium, fast, superfast, ultrafast).")
+    elif state.get('step') == 'await_preset':
+        preset = message.text.strip().lower()
+        if preset not in {"medium", "fast", "superfast", "ultrafast"}:
+            await message.reply_text("Invalid preset. Please send one of: medium, fast, superfast, ultrafast.")
+            return
+        state['preset'] = preset
+        state['step'] = 'ask_thumbnail'
+        await message.reply_text("Do you want to use a custom thumbnail? (yes/no)")
+    elif state.get('step') == 'ask_thumbnail':
+        answer = message.text.strip().lower()
+        if answer in ['yes', 'y']:
+            state['step'] = 'await_thumbnail'
+            await message.reply_text("Please send your custom thumbnail image.")
+        else:
+            state['step'] = 'ask_caption'
+            await message.reply_text("Do you want to add a custom extra caption? (yes/no)")
+    elif state.get('step') == 'ask_caption':
+        answer = message.text.strip().lower()
+        if answer in ['yes', 'y']:
+            state['step'] = 'await_caption'
+            await message.reply_text("Please send your custom extra caption text.")
+        else:
+            state['step'] = 'processing'
+            await message.reply_text("All inputs collected. Bulk watermarking started.")
+            await process_bulk_watermark(client, message, state, chat_id)
+    elif state.get('step') == 'await_caption':
+        state['custom_caption'] = message.text.strip()
+        state['step'] = 'processing'
+        await message.reply_text("Custom caption received. Bulk watermarking started.")
+        await process_bulk_watermark(client, message, state, chat_id)
+
+# ─── Existing Video Handler for Single Processing ───
+@app.on_message(filters.private & (filters.video | filters.document))
+async def video_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
+    global processing_active
+    chat_id = message.chat.id
+    if chat_id not in user_state:
+        return
+    state = user_state[chat_id]
+    mode = state.get('mode')
+    if mode in ['watermark', 'watermarktm']:
+        if state.get('step') != 'await_video':
+            return
+        state['video_message'] = message
+        state['step'] = 'await_text'
+        await message.reply_text("Video captured. Now send the watermark text.")
+    elif mode == 'harrypotter':
+        if processing_active:
+            await message.reply_text("A process is already running; please try later.")
+            return
+        state['video_message'] = message
+        state['step'] = 'processing'
+        await message.reply_text("Video captured. Watermarking started.")
+        processing_active = True
+        try:
+            await process_watermark(client, message, state, chat_id)
+        finally:
+            processing_active = False
+    elif mode == 'overlay':
+        if state.get('step') == 'await_main':
+            state['main_video_message'] = message
+            state['step'] = 'await_overlay'
+            await message.reply_text("Main video received. Now send the **overlay video** (with green screen background).")
+    elif mode == 'imgwatermark':
+        if state.get('step') != 'await_video':
+            return
+        state['video_message'] = message
+        state['step'] = 'await_image'
+        await message.reply_text("Video received. Now send the watermark image.")
+
+# ─── Updated Image Handler for Custom Thumbnail (Single & Bulk) and /imgwatermark ───
+@app.on_message(filters.private & (filters.photo | filters.document))
+async def image_handler(client, message: Message):
+    if not await check_authorization(message):
+        return
+    global processing_active
+    chat_id = message.chat.id
+    # Handle bulk mode custom thumbnail first
+    if chat_id in bulk_state:
+        bulk_state_obj = bulk_state[chat_id]
+        if bulk_state_obj.get('step') == 'await_thumbnail':
+            bulk_state_obj['custom_thumbnail'] = message
+            bulk_state_obj['step'] = 'ask_caption'
+            await message.reply_text("Custom thumbnail received. Do you want to add a custom extra caption? (yes/no)")
+            return
+    # Then handle single mode custom thumbnail
+    if chat_id not in user_state:
+        return
+    state = user_state[chat_id]
+    if state.get('step') == 'await_thumbnail':
+        state['custom_thumbnail'] = message
+        state['step'] = 'ask_caption'
+        await message.reply_text("Custom thumbnail received. Do you want to add a custom extra caption? (yes/no)")
+        return
+    if state.get('mode') == 'imgwatermark' and state.get('step') == 'await_image':
+        state['image_message'] = message
+        state['step'] = 'processing'
+        await message.reply_text("Image received. Processing video with image watermark, please wait...")
+        if processing_active:
+            await message.reply_text("A process is already running; please try later.")
+            return
+        processing_active = True
+        try:
+            await process_imgwatermark(client, message, state, chat_id)
+        finally:
+            processing_active = False
+
+# ─── Updated Text Handler for Single Processing (Custom Thumbnail & Caption) ───
 @app.on_message(filters.text & filters.private)
 async def text_handler(client, message: Message):
     if not await check_authorization(message):
         return
-    global processing_active  # Declare the global variable once at the top.
-    
+    global processing_active
     chat_id = message.chat.id
     if chat_id not in user_state:
         return
     state = user_state[chat_id]
     current_step = state.get('step')
     mode = state.get('mode')
-
     if mode in ['watermark', 'watermarktm']:
         if current_step == 'await_text':
             state['watermark_text'] = message.text.strip()
@@ -599,6 +530,7 @@ async def text_handler(client, message: Message):
     elif mode == 'overlay':
         pass
 
+# ─── Helper Function: Get Video Duration Using ffprobe ───
 async def get_video_duration(file_path):
     proc = await asyncio.create_subprocess_exec(
         "ffprobe", "-v", "error",
@@ -632,6 +564,7 @@ async def get_video_duration(file_path):
             logger.error("Error getting stream duration: " + str(e))
     return duration
 
+# ─── Processing Function for Single Watermark ───
 async def process_watermark(client, message, state, chat_id):
     try:
         progress_msg = await client.send_message(chat_id, "Downloading: 0%")
@@ -661,9 +594,9 @@ async def process_watermark(client, message, state, chat_id):
         duration_sec = 1  # safeguard
     base_name = os.path.splitext(os.path.basename(input_file_path))[0]
     if state['mode'] == 'watermarktm':
-        font_path = "cour.ttf"
+        font_path = "cour.ttf"  # Adjust if necessary.
     else:
-        font_path = "/usr/share/fonts/truetype/consola.ttf"
+        font_path = "/usr/share/fonts/truetype/consola.ttf"  # Adjust if needed.
     if state['mode'] in ['watermark', 'harrypotter']:
         filter_str = (
             f"drawtext=text='{state['watermark_text']}':"
@@ -735,11 +668,13 @@ async def process_watermark(client, message, state, chat_id):
             del user_state[chat_id]
         return
 
+    # Retrieve metadata and generate/upload thumbnail:
     metadata = get_video_details(output_file)
     width = metadata.get("width", 0)
     height = metadata.get("height", 0)
     duration_value = int(metadata.get("duration", 0))
     thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
+    # Use the custom thumbnail if provided; otherwise, generate one.
     if 'custom_thumbnail' in state:
         custom_thumb_path = os.path.join(temp_dir, f"{base_name}_custom_thumbnail.jpg")
         await state['custom_thumbnail'].download(file_name=custom_thumb_path)
@@ -752,6 +687,7 @@ async def process_watermark(client, message, state, chat_id):
     except FloodWait:
         upload_msg = None
     upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
+    # Append custom caption text if available.
     original_caption = video_msg.caption if video_msg.caption else "Here is your watermarked video."
     if 'custom_caption' in state:
         original_caption += "\n\n" + state['custom_caption']
@@ -781,6 +717,7 @@ async def process_watermark(client, message, state, chat_id):
     if chat_id in user_state:
         del user_state[chat_id]
 
+# ─── Processing Function for Bulk Watermark ───
 async def process_bulk_watermark(client, message, state, chat_id):
     videos = state.get('videos', [])
     for video_msg in videos:
@@ -882,11 +819,13 @@ async def process_bulk_watermark(client, message, state, chat_id):
             shutil.rmtree(temp_dir)
             continue
 
+        # Retrieve metadata and generate thumbnail for the processed bulk video
         metadata = get_video_details(output_file)
         width = metadata.get("width", 0)
         height = metadata.get("height", 0)
         duration_value = int(metadata.get("duration", 0))
         thumb_path = os.path.join(temp_dir, f"{base_name}_thumbnail.jpg")
+        # Use the custom thumbnail if provided; otherwise, generate one.
         if 'custom_thumbnail' in state:
             custom_thumb_path = os.path.join(temp_dir, f"{base_name}_custom_thumbnail.jpg")
             await state['custom_thumbnail'].download(file_name=custom_thumb_path)
@@ -928,6 +867,7 @@ async def process_bulk_watermark(client, message, state, chat_id):
     if chat_id in bulk_state:
         del bulk_state[chat_id]
 
+# ─── Processing Functions for Overlay and Image Watermark ───
 async def process_overlay(client, message, state, chat_id):
     temp_dir = tempfile.mkdtemp()
     state['temp_dir'] = temp_dir
@@ -989,132 +929,8 @@ async def process_overlay(client, message, state, chat_id):
 async def process_imgwatermark(client, message, state, chat_id):
     await client.send_message(chat_id, "Image watermark processing is not modified in bulk mode.")
 
-# ───────────────────────────────────────────────
-# PDF Watermarking Handlers (Integrated)
-# ───────────────────────────────────────────────
-
-@app.on_message(filters.command("pdfwatermark"))
-async def start_pdfwatermark_handler(client: Client, message: Message):
-    chat_id = message.chat.id
-    user_data[chat_id] = {"state": WAITING_FOR_PDF, "pdfs": []}
-    await message.reply_text("Please send all PDF files now.")
-
-@app.on_message(filters.document)
-async def receive_pdf_handler(client: Client, message: Message):
-    chat_id = message.chat.id
-    if chat_id not in user_data or user_data[chat_id].get("state") != WAITING_FOR_PDF:
-        return
-    document = message.document
-    if document.mime_type != "application/pdf":
-        await message.reply_text("This is not a PDF file. Please send a PDF.")
-        return
-    user_data[chat_id]["pdfs"].append({
-        "file_id": document.file_id,
-        "file_name": document.file_name
-    })
-    await message.reply_text(f"Received {document.file_name}. You can send more PDFs or type /pdfask when done.")
-
-@app.on_message(filters.command("pdfask"))
-async def start_pdfask_handler(client: Client, message: Message):
-    chat_id = message.chat.id
-    if chat_id not in user_data or not user_data[chat_id].get("pdfs"):
-        await message.reply_text("No PDFs received. Please start with /pdfwatermark and then send PDF files.")
-        return
-    user_data[chat_id]["state"] = WAITING_FOR_LOCATION
-    await message.reply_text(
-        "Choose watermark location by sending a number:\n"
-        "1. Top right\n"
-        "2. Top middle\n"
-        "3. Top left\n"
-        "4. Middle straight\n"
-        "5. Middle 45 degree\n"
-        "6. Bottom right\n"
-        "7. Bottom centre\n"
-        "8. Bottom left\n"
-        "9. Cover-Up (using OCR)\n"
-        "10. Sides Cover-Up (rectangle with normalized 0-10 coordinates)"
-    )
-
-@app.on_message(filters.text & ~filters.command(["pdfwatermark", "pdfask"]))
-async def pdf_text_handler(client: Client, message: Message):
-    chat_id = message.chat.id
-    if chat_id not in user_data:
-        return
-    state = user_data[chat_id].get("state")
-    text = message.text.strip()
-    
-    if state == WAITING_FOR_LOCATION:
-        try:
-            loc = int(text)
-            if loc < 1 or loc > 10:
-                await message.reply_text("Invalid choice. Please send a number between 1 and 10 for location.")
-                return
-        except ValueError:
-            await message.reply_text("Please send a valid number for location.")
-            return
-        user_data[chat_id]["location"] = loc
-        if loc == 9:
-            user_data[chat_id]["state"] = WAITING_FOR_FIND_TEXT
-            await message.reply_text("Enter the text to find (the text you want to cover up):")
-        elif loc == 10:
-            await send_first_page_image(client, chat_id)
-            user_data[chat_id]["state"] = WAITING_FOR_SIDE_TOP_LEFT
-            await message.reply_text("Enter the LEFT TOP normalized coordinate (format: x,y in 0-10, e.g., 2,3):")
-        else:
-            user_data[chat_id]["state"] = WAITING_FOR_WATERMARK_TEXT
-            await message.reply_text("Enter watermark text:")
-    elif state == WAITING_FOR_FIND_TEXT:
-        if not text:
-            await message.reply_text("Text to find cannot be empty. Please enter the text to cover up:")
-            return
-        user_data[chat_id]["find_text"] = text
-        user_data[chat_id]["state"] = WAITING_FOR_WATERMARK_TEXT
-        await message.reply_text("Enter watermark text:")
-    elif state == WAITING_FOR_SIDE_TOP_LEFT:
-        try:
-            x_str, y_str = text.split(",")
-            coord = (float(x_str.strip()), float(y_str.strip()))
-        except Exception:
-            await message.reply_text("Invalid format. Please enter coordinate as x,y (e.g., 2,3).")
-            return
-        user_data[chat_id]["side_coords"] = [coord]
-        user_data[chat_id]["state"] = WAITING_FOR_SIDE_BOTTOM_RIGHT
-        await message.reply_text("Enter the RIGHT BOTTOM normalized coordinate (format: x,y in 0-10, e.g., 8,7):")
-    elif state == WAITING_FOR_SIDE_BOTTOM_RIGHT:
-        try:
-            x_str, y_str = text.split(",")
-            coord = (float(x_str.strip()), float(y_str.strip()))
-        except Exception:
-            await message.reply_text("Invalid format. Please enter coordinate as x,y (e.g., 8,7).")
-            return
-        user_data[chat_id]["side_coords"].append(coord)
-        user_data[chat_id]["state"] = WAITING_FOR_WATERMARK_TEXT
-        await message.reply_text("Enter watermark text:")
-    elif state == WAITING_FOR_WATERMARK_TEXT:
-        if not text:
-            await message.reply_text("Watermark text cannot be empty. Please enter the watermark text.")
-            return
-        user_data[chat_id]["watermark_text"] = text
-        user_data[chat_id]["state"] = WAITING_FOR_TEXT_SIZE
-        await message.reply_text("Enter watermark text size (e.g., 24):")
-    elif state == WAITING_FOR_TEXT_SIZE:
-        try:
-            size = int(text)
-        except ValueError:
-            await message.reply_text("Please send a valid number for text size.")
-            return
-        user_data[chat_id]["text_size"] = size
-        user_data[chat_id]["state"] = WAITING_FOR_COLOR
-        await message.reply_text("Choose watermark text colour by sending a number:\n1. Red\n2. Black\n3. White")
-    elif state == WAITING_FOR_COLOR:
-        mapping = {"1": "red", "2": "black", "3": "white"}
-        if text not in mapping:
-            await message.reply_text("Invalid choice. Please choose 1, 2, or 3 for colour.")
-            return
-        user_data[chat_id]["color"] = mapping[text]
-        await message.reply_text("PDF watermarking started.")
-        await process_pdfs_handler(client, chat_id)
-        user_data.pop(chat_id, None)
+# ─── Start the Pyrogram Client ───
+if __name__ == '__main__':
     # Optional: Test thumbnail and metadata functions before starting the bot.
     test_video = "path/to/your/test_video.mp4"
     thumbnail = "path/to/output_thumbnail.jpg"
@@ -1124,9 +940,4 @@ async def pdf_text_handler(client: Client, message: Message):
     metadata = get_video_details(test_video)
     if metadata:
         logging.info(f"Video metadata: {metadata}")
-# ───────────────────────────────────────────────
-# Main Execution
-# ───────────────────────────────────────────────
-if __name__ == '__main__':
-
     app.run()
