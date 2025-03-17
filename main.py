@@ -1103,11 +1103,6 @@ async def pdf_text_handler(client: Client, message: Message):
         await message.reply_text("PDF watermarking started.")
         await process_pdfs_handler(client, chat_id)
         user_data.pop(chat_id, None)
-
-# ───────────────────────────────────────────────
-# Main Execution
-# ───────────────────────────────────────────────
-if __name__ == '__main__':
     # Optional: Test thumbnail and metadata functions before starting the bot.
     test_video = "path/to/your/test_video.mp4"
     thumbnail = "path/to/output_thumbnail.jpg"
@@ -1117,4 +1112,9 @@ if __name__ == '__main__':
     metadata = get_video_details(test_video)
     if metadata:
         logging.info(f"Video metadata: {metadata}")
+# ───────────────────────────────────────────────
+# Main Execution
+# ───────────────────────────────────────────────
+if __name__ == '__main__':
+
     app.run()
