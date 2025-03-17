@@ -275,6 +275,7 @@ async def process_pdfs_handler(client: Client, chat_id: int):
             logger.warning(f"Error removing temporary files: {e}")
 
 
+# PDF command handlers (for private chats) with high priority (group=-1)
 @app.on_message(filters.command("pdfwatermark") & filters.private, group=-1)
 async def start_pdfwatermark_handler(client: Client, message: Message):
     logger.info("PDF command /pdfwatermark received.")
@@ -417,6 +418,13 @@ async def handle_text_handler(client: Client, message: Message):
         await message.reply_text("PDF watermarking started.")
         await process_pdfs_handler(client, chat_id)
         user_data.pop(chat_id, None)
+
+
+# New test command to verify that pdf.py is active
+@app.on_message(filters.command("testpdf") & filters.private, group=-1)
+async def test_pdf_handler(client: Client, message: Message):
+    logger.info("Test command /testpdf received in pdf.py.")
+    await message.reply_text("PDF module active")
 
 
 if __name__ == '__main__':
