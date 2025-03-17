@@ -286,9 +286,13 @@ async def bulk_watermarktmask_cmd(client, message: Message):
     bulk_state[chat_id]['step'] = 'await_text'
     await message.reply_text("Send watermark text for bulk text watermarking.")
 
+# ─── Bulk Video Handler (skip PDFs) ───
 @app.on_message(filters.private & (filters.video | filters.document))
 async def bulk_video_handler(client, message: Message):
     if not await check_authorization(message):
+        return
+    # Skip PDF documents so that they are handled in pdf.py
+    if message.document and message.document.mime_type == "application/pdf":
         return
     chat_id = message.chat.id
     if chat_id in bulk_state:
@@ -359,10 +363,13 @@ async def bulk_text_handler(client, message: Message):
         await message.reply_text("Custom caption received. Bulk watermarking started.")
         await process_bulk_watermark(client, message, state, chat_id)
 
-# ─── Existing Video Handler for Single Processing ───
+# ─── Video Handler for Single Processing (skip PDFs) ───
 @app.on_message(filters.private & (filters.video | filters.document))
 async def video_handler(client, message: Message):
     if not await check_authorization(message):
+        return
+    # Skip PDF documents so they are handled in pdf.py
+    if message.document and message.document.mime_type == "application/pdf":
         return
     global processing_active
     chat_id = message.chat.id
@@ -400,7 +407,7 @@ async def video_handler(client, message: Message):
         state['step'] = 'await_image'
         await message.reply_text("Video received. Now send the watermark image.")
 
-# ─── Updated Image Handler for Custom Thumbnail (Single & Bulk) and /imgwatermark ───
+# ─── Image Handler for Custom Thumbnail (Single & Bulk) and /imgwatermark ───
 @app.on_message(filters.private & (filters.photo | filters.document))
 async def image_handler(client, message: Message):
     if not await check_authorization(message):
@@ -437,7 +444,7 @@ async def image_handler(client, message: Message):
         finally:
             processing_active = False
 
-# ─── Updated Text Handler for Single Processing (Custom Thumbnail & Caption) ───
+# ─── Text Handler for Single Processing (Custom Thumbnail & Caption) ───
 @app.on_message(filters.text & filters.private)
 async def text_handler(client, message: Message):
     if not await check_authorization(message):
@@ -850,7 +857,6 @@ async def process_bulk_watermark(client, message, state, chat_id):
             logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
             await client.send_message(chat_id, "Failed to send watermarked video.")
         shutil.rmtree(temp_dir)
-        # Optionally, you may clear the bulk state per video or once after processing all videos.
     if chat_id in bulk_state:
         del bulk_state[chat_id]
 
