@@ -24,5 +24,5 @@ COPY . .
 # Copy the Courier New font to the image
 COPY cour.ttf /usr/share/fonts/truetype/cour.ttf
 
-# Use the requested command in shell form.
-CMD gunicorn app:app & python3 main.py
+# Use a shell command so the ampersand is properly interpreted.
+CMD ["sh", "-c", "gunicorn app:app & python3 main.py"]
