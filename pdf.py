@@ -12,11 +12,6 @@ import pytesseract
 from PIL import Image, ImageDraw, ImageFont
 import fitz  # PyMuPDF
 
-# Import configurations and functions from main.py
-from main import (
-    BOT_TOKEN, API_ID, API_HASH, app, user_data, logger, check_authorization
-)
-
 # Set the Tesseract OCR executable path for Unix-based systems
 pytesseract.pytesseract.tesseract_cmd = r"/usr/bin/tesseract"
 
