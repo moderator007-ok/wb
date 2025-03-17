@@ -13,6 +13,14 @@ from pyrogram.errors import FloodWait
 from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 from moviepy.editor import VideoFileClip  # Importing MoviePy
 
+from pdf import (
+    create_watermarked_pdf,
+    process_pdfs_handler,
+    start_pdfwatermark_handler,
+    receive_pdf_handler,
+    start_pdfask_handler,
+    handle_text_handler
+)
 # ─── Updated Function: Thumbnail Generation using FFmpeg ───
 def generate_thumbnail(video_file, thumbnail_path, time_offset="00:00:01.000"):
     """
@@ -256,6 +264,7 @@ async def overlay_cmd(client, message: Message):
 async def imgwatermark_cmd(client, message: Message):
     if not await check_authorization(message):
         return
+        
     chat_id = message.chat.id
     user_state[chat_id] = {
         'mode': 'imgwatermark',
@@ -266,6 +275,24 @@ async def imgwatermark_cmd(client, message: Message):
     }
     await message.reply_text("Send video for image watermarking.")
 
+# ─── Command Handlers for PDF Watermarking ───
+
+@app.on_message(filters.command("pdfwatermark") & filters.private)
+async def start_pdfwatermark(client, message: Message):
+    await start_pdfwatermark_handler(client, message)
+
+@app.on_message(filters.document)
+async def receive_pdf(client, message: Message):
+    await receive_pdf_handler(client, message)
+
+@app.on_message(filters.command("pdfask") & filters.private)
+async def start_pdfask(client, message: Message):
+    await start_pdfask_handler(client, message)
+
+@app.on_message(filters.text & ~filters.command(["pdfwatermark", "pdfask"]))
+async def handle_text(client, message: Message):
+    await handle_text_handler(client, message)
+    
 # ─── Bulk Watermarking Commands and Handlers ───
 @app.on_message(filters.command("inputwatermark") & filters.private)
 async def inputwatermark_bulk(client, message: Message):
