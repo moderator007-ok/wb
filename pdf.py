@@ -212,7 +212,7 @@ async def process_pdfs_handler(client: Client, chat_id: int):
     watermark_text = data.get("watermark_text")
     text_size = data.get("text_size")
     color_name = data.get("color")
-    color_mapping = {"red": red, "black", "white"}
+    color_mapping = {"red": red, "black": black, "white": white}
     watermark_color = color_mapping.get(color_name, black)
     
     find_text = data.get("find_text") if location == 9 else None
