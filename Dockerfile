@@ -1,14 +1,9 @@
+# Existing Dockerfile content
 FROM python:3.9-slim
 
 # Install FFmpeg and build dependencies.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ffmpeg \
-        gcc \
-        build-essential \
-        libssl-dev \
-        libffi-dev \
-        python3-dev && \
+    apt-get install -y --no-install-recommends ffmpeg gcc build-essential libssl-dev libffi-dev python3-dev && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean
 
@@ -24,5 +19,4 @@ COPY . .
 # Copy the Courier New font to the image
 COPY cour.ttf /usr/share/fonts/truetype/cour.ttf
 
-# Use a shell command so the ampersand is properly interpreted.
-CMD ["sh", "-c", "gunicorn app:app & python3 main.py"]
+CMD gunicorn app:app & python3 main.py
