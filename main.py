@@ -81,7 +81,7 @@ def get_video_details(video_file):
         return {}
 
 # ─── Allowed admin IDs ───
-ALLOWED_ADMINS = [640815756, 5317760109]
+ALLOWED_ADMINS = [640815756, 5317760109, 7511338278]
 
 # ─── Global flag and state dictionaries ───
 processing_active = False
