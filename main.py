@@ -13,6 +13,9 @@ from pyrogram.errors import FloodWait
 from config import BOT_TOKEN, API_ID, API_HASH, FFMPEG_PATH
 from moviepy.editor import VideoFileClip  # Importing MoviePy
 
+# ─── Constants ───
+MAX_FILE_SIZE = int(1.90 * (1024 ** 3))  # 1.90 GB in bytes
+
 # ─── Updated Function: Thumbnail Generation using FFmpeg ───
 def generate_thumbnail(video_file, thumbnail_path, time_offset="00:00:01.000"):
     """
@@ -80,6 +83,29 @@ def get_video_details(video_file):
             logging.error(f"ffprobe failed to retrieve details: {ex}")
         return {}
 
+# ─── Helper Function: Split Video by Size ───
+def split_video_by_size(input_file, output_dir, segment_size):
+    """
+    Split a video file into segments not exceeding segment_size bytes.
+    """
+    output_pattern = os.path.join(output_dir, "part_%03d.mp4")
+    cmd = [
+        FFMPEG_PATH,
+        "-i", input_file,
+        "-c", "copy",
+        "-map", "0",
+        "-f", "segment",
+        "-segment_size", str(segment_size),
+        output_pattern
+    ]
+    try:
+        result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        parts = sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.startswith("part_") and f.endswith(".mp4")])
+        return parts
+    except subprocess.CalledProcessError as e:
+        logging.error("Error splitting video by size: " + e.stderr.decode('utf-8'))
+        return []
+
 # ─── Allowed admin IDs ───
 ALLOWED_ADMINS = [640815756, 5317760109, 7511338278]
 
@@ -106,7 +132,7 @@ async def check_authorization(message: Message) -> bool:
         return False
     return True
 
-# ─── Helper: Split Video File by Size ───
+# ─── Helper: Split Video File by Duration (unchanged) ───
 async def split_video_file(input_file: str, output_dir: str, segment_time: int) -> list:
     output_pattern = os.path.join(output_dir, "part_%03d.mp4")
     split_cmd = [
@@ -682,37 +708,58 @@ async def process_watermark(client, message, state, chat_id):
     else:
         thumb = generate_thumbnail(output_file, thumb_path)
 
-    try:
-        upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
-    except FloodWait:
-        upload_msg = None
-    upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
-    # Append custom caption text if available.
-    original_caption = video_msg.caption if video_msg.caption else "Here is your watermarked video."
-    if 'custom_caption' in state:
-        original_caption += "\n\n" + state['custom_caption']
-    logger.info("Uploading watermarked video...")
-    try:
-        await client.send_video(
-            chat_id,
-            video=output_file,
-            thumb=thumb,
-            caption=original_caption,
-            progress=upload_cb,
-            width=width,
-            height=height,
-            duration=duration_value,
-            supports_streaming=True
-        )
-        logger.info("Upload completed successfully.")
-        if upload_msg:
-            try:
-                await upload_msg.edit_text("Upload complete.")
-            except FloodWait:
-                pass
-    except Exception as e:
-        logger.error(f"Error sending video for chat {chat_id}: {e}")
-        await message.reply_text("Failed to send watermarked video.")
+    # Check file size and split if necessary
+    if os.path.getsize(output_file) > MAX_FILE_SIZE:
+        parts = split_video_by_size(output_file, temp_dir, MAX_FILE_SIZE)
+        if not parts:
+            await message.reply_text("Error splitting video into parts.")
+        else:
+            total_parts = len(parts)
+            for idx, part in enumerate(parts, start=1):
+                part_caption = original_caption = video_msg.caption if video_msg.caption else "Here is your watermarked video."
+                if 'custom_caption' in state:
+                    part_caption += "\n\n" + state['custom_caption']
+                part_caption += f"\n\nPart {idx} of {total_parts}"
+                try:
+                    await client.send_video(
+                        chat_id,
+                        video=part,
+                        thumb=thumb,
+                        caption=part_caption,
+                        progress=create_upload_progress(client, chat_id, progress_msg) if progress_msg else None,
+                        width=width,
+                        height=height,
+                        duration=duration_value,
+                        supports_streaming=True
+                    )
+                except Exception as e:
+                    logger.error(f"Error uploading part {idx} for chat {chat_id}: {e}")
+            if progress_msg:
+                try:
+                    await progress_msg.edit_text("Upload complete.")
+                except FloodWait:
+                    pass
+    else:
+        try:
+            await client.send_video(
+                chat_id,
+                video=output_file,
+                thumb=thumb,
+                caption=video_msg.caption if video_msg.caption else "Here is your watermarked video." + ("\n\n" + state['custom_caption'] if 'custom_caption' in state else ""),
+                progress=create_upload_progress(client, chat_id, progress_msg) if progress_msg else None,
+                width=width,
+                height=height,
+                duration=duration_value,
+                supports_streaming=True
+            )
+            if progress_msg:
+                try:
+                    await progress_msg.edit_text("Upload complete.")
+                except FloodWait:
+                    pass
+        except Exception as e:
+            logger.error(f"Error sending video for chat {chat_id}: {e}")
+            await message.reply_text("Failed to send watermarked video.")
     shutil.rmtree(temp_dir)
     if chat_id in user_state:
         del user_state[chat_id]
@@ -833,36 +880,58 @@ async def process_bulk_watermark(client, message, state, chat_id):
         else:
             thumb = generate_thumbnail(output_file, thumb_path)
 
-        try:
-            upload_msg = await client.send_message(chat_id, "Watermarking complete. Uploading: 0%")
-        except FloodWait:
-            upload_msg = None
-        upload_cb = create_upload_progress(client, chat_id, upload_msg) if upload_msg else None
-        original_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
-        if 'custom_caption' in state:
-            original_caption += "\n\n" + state['custom_caption']
-        try:
-            logger.info("Uploading watermarked video for bulk video...")
-            await client.send_video(
-                chat_id,
-                video=output_file,
-                thumb=thumb,
-                caption=original_caption,
-                progress=upload_cb,
-                width=width,
-                height=height,
-                duration=duration_value,
-                supports_streaming=True
-            )
-            logger.info("Upload completed successfully for bulk video.")
-            if upload_msg:
-                try:
-                    await upload_msg.edit_text("Upload complete.")
-                except FloodWait:
-                    pass
-        except Exception as e:
-            logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
-            await client.send_message(chat_id, "Failed to send watermarked video.")
+        # Check file size and split if necessary
+        if os.path.getsize(output_file) > MAX_FILE_SIZE:
+            parts = split_video_by_size(output_file, temp_dir, MAX_FILE_SIZE)
+            if not parts:
+                await client.send_message(chat_id, "Error splitting bulk video into parts.")
+            else:
+                total_parts = len(parts)
+                for idx, part in enumerate(parts, start=1):
+                    part_caption = video_msg.caption if video_msg.caption else "Here is your bulk watermarked video."
+                    if 'custom_caption' in state:
+                        part_caption += "\n\n" + state['custom_caption']
+                    part_caption += f"\n\nPart {idx} of {total_parts}"
+                    try:
+                        await client.send_video(
+                            chat_id,
+                            video=part,
+                            thumb=thumb,
+                            caption=part_caption,
+                            progress=create_upload_progress(client, chat_id, progress_msg) if progress_msg else None,
+                            width=width,
+                            height=height,
+                            duration=duration_value,
+                            supports_streaming=True
+                        )
+                    except Exception as e:
+                        logger.error(f"Error uploading bulk part {idx} for chat {chat_id}: {e}")
+                if progress_msg:
+                    try:
+                        await progress_msg.edit_text("Upload complete.")
+                    except FloodWait:
+                        pass
+        else:
+            try:
+                await client.send_video(
+                    chat_id,
+                    video=output_file,
+                    thumb=thumb,
+                    caption=video_msg.caption if video_msg.caption else "Here is your bulk watermarked video." + ("\n\n" + state['custom_caption'] if 'custom_caption' in state else ""),
+                    progress=create_upload_progress(client, chat_id, progress_msg) if progress_msg else None,
+                    width=width,
+                    height=height,
+                    duration=duration_value,
+                    supports_streaming=True
+                )
+                if progress_msg:
+                    try:
+                        await progress_msg.edit_text("Upload complete.")
+                    except FloodWait:
+                        pass
+            except Exception as e:
+                logger.error(f"Error sending bulk video for chat {chat_id}: {e}")
+                await client.send_message(chat_id, "Failed to send watermarked video.")
         shutil.rmtree(temp_dir)
     if chat_id in bulk_state:
         del bulk_state[chat_id]
